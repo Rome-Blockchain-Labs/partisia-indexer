@@ -1,0 +1,56 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    network_mode: host
+    environment:
+      POSTGRES_DB: ls_indexer
+      POSTGRES_USER: indexer
+      POSTGRES_PASSWORD: changeme
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./src/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U indexer -d ls_indexer"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  indexer:
+    build: .
+    network_mode: host
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PARTISIA_API_URL: https://reader.partisiablockchain.com
+      LS_CONTRACT: 02fc82abf81cbb36acfe196faa1ad49ddfa7abdda6
+      DEPLOYMENT_BLOCK: 10547814
+      DB_HOST: localhost
+      DB_PORT: 5432
+      DB_NAME: ls_indexer
+      DB_USER: indexer
+      DB_PASSWORD: changeme
+      INDEX_INTERVAL_S: 10
+      BATCH_SIZE: 100
+    restart: unless-stopped
+    command: ["bun", "run", "src/index.ts"]
+
+  api:
+    build: .
+    network_mode: host
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DB_HOST: localhost
+      DB_PORT: 5432
+      DB_NAME: ls_indexer
+      DB_USER: indexer
+      DB_PASSWORD: changeme
+    restart: unless-stopped
+    command: ["bun", "run", "src/api/endpoints.ts"]
+
+volumes:
+  postgres_data:
