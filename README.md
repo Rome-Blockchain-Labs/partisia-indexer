@@ -1,208 +1,168 @@
-# partisia-staking
+# partisia-liquid-staking-indexer
 
-## Overview
+Blockchain indexer for Partisia Liquid Staking protocol. Tracks exchange rates, user balances, and protocol rewards with concurrent block processing.
 
-Liquid staking bot to delegate tokens from our smart contract to validator nodes
+## Features
 
-## Important
+- **Concurrent indexing** - Process up to 100 blocks in parallel
+- **Real-time sync** - Automatically catches up and follows chain tip
+- **REST API** - Query historical rates, rewards, APY, and user data
+- **PostgreSQL storage** - Efficient time-series data storage
+- **Docker ready** - Single command deployment
 
-Before running the bot, ensure that the Liquid Staking contract has the necessary permissions to spend tokens from the BOT account. The BOT account must approve the contract to spend its tokens. This is a crucial step to allow the BOT to deposit the tokens back to contract.
+## Quick Start
 
-For example:
-
-    ```
-    cargo pbc transaction action --pk=bot.pk <stake_token_address> approve <LS_contract_address> 10000000
-    ```
-
-where stake token address is the MPC20 token address.
-
-## Getting Started
-
-### Prerequisites
-
-- Node.js (version 24.1.0)
-- npm (Node Package Manager)
-- A `.env` file with necessary environment variables
-
-### Installation for development
-
-1. Clone the repository:
-   ```bash
-   git clone https://github.com:Rome-Blockchain-Labs/partisia-staking.git
-   cd partisia-staking
-   ```
-
-2. Install the dependencies:
-   ```bash
-   npm install
-   ```
-
-3. Set up your environment variables in a `.env` file. Refer to `.env_production_example` and `src/config/default.ts` for required configurations.
-
-### Running the Application
-
-To start the application locally, run the following command:
-   ```bash
-   npm run dev
-   ```
-
-## Deploy / Update guide (LXC production)
-
-> TL;DR – build as **bot**, sync to `/srv/partisia-staking`, restart the service using `/usr/local/bin/partisia-restart.sh`.
-
-> **📖 For detailed production operations, see [docs/production.md](docs/production.md)**
-
-### 1 · Pull latest code (as _bot_)
 ```bash
-# SSH into the container as bot
-cd ~/git/partisia-staking
-git pull
+# Clone repository
+git clone https://github.com/rome-labs/partisia-liquid-staking-indexer
+cd partisia-liquid-staking-indexer
+
+# Configure environment
+cp .env.example .env
+# Edit .env with your settings
+
+# Run with Docker
+docker-compose up -d
+
+# Or run locally
+bun install
+bun run dev
 ```
 
-### 2 · Install / update dependencies & build
+## Configuration
+
+```env
+# Required
+PARTISIA_API_URL=https://reader.partisiablockchain.com
+LS_CONTRACT=02fc82abf81cbb36acfe196faa1ad49ddfa7abdda6
+DEPLOYMENT_BLOCK=10547814
+
+# Database
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=ls_indexer
+DB_USER=indexer
+DB_PASSWORD=changeme
+
+# Performance tuning
+INDEXER_BATCH_SIZE=100    # Blocks per batch
+INDEXER_CONCURRENCY=10    # Parallel requests
+INDEX_INTERVAL_S=10       # Poll interval when synced
+```
+
+## API Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/stats` | Current protocol state |
+| `GET /api/exchangeRates?hours=24` | Historical exchange rates |
+| `GET /api/accrueRewards` | Recent reward events |
+| `GET /api/daily?days=7` | Daily aggregated data |
+| `GET /api/apy` | Current APY calculations |
+| `GET /api/users` | User balances list |
+| `GET /health` | Service health check |
+
+## Architecture
+
+```
+┌─────────────┐     ┌──────────┐     ┌────────────┐
+│   Partisia  │────▶│  Indexer │────▶│ PostgreSQL │
+│  Blockchain │     └──────────┘     └────────────┘
+└─────────────┘            │
+                           ▼
+                    ┌──────────┐
+                    │ REST API │
+                    └──────────┘
+```
+
+The indexer:
+1. Fetches blocks from Partisia blockchain
+2. Extracts Liquid Staking contract state changes
+3. Calculates exchange rates and rewards
+4. Stores in PostgreSQL for efficient queries
+5. Serves data via REST API
+
+## Performance
+
+Default settings process ~80 blocks/second. Tune for your environment:
+
+- **Low latency** (< 50ms to API): `BATCH_SIZE=200, CONCURRENCY=20`
+- **High latency** (> 100ms): `BATCH_SIZE=50, CONCURRENCY=5`
+- **Rate limited**: Reduce `CONCURRENCY` to 5 or less
+
+## Database Schema
+
+```sql
+-- Core state tracking
+contract_states (
+  block_number BIGINT PRIMARY KEY,
+  timestamp TIMESTAMP,
+  exchange_rate DECIMAL(20,10),
+  total_pool_stake_token TEXT,
+  total_pool_liquid TEXT
+)
+
+-- User balances
+users (
+  address TEXT PRIMARY KEY,
+  balance TEXT,
+  first_seen TIMESTAMP,
+  last_seen TIMESTAMP
+)
+
+-- Protocol rewards
+protocol_rewards (
+  block_number BIGINT,
+  amount TEXT,
+  timestamp TIMESTAMP
+)
+```
+
+## Development
+
 ```bash
-# still as bot
-# install deps
-npm ci
+# Install dependencies
+bun install
 
-# compile TypeScript / bundle JS etc.
-npm run build
+# Reset database
+./scripts/reset_db.sh
+
+# Run indexer
+bun run src/index.ts
+
+# Run API server (separate terminal)
+bun run src/api/endpoints.ts
+
+# Test API
+curl localhost:3002/api/stats | jq
 ```
 
-### 3 · Sync artefacts to the runtime directory & restart service
-```bash
-sudo rsync -a --delete ./dist/ /srv/partisia-staking/ \
-     && sudo rsync -a --delete ./node_modules /srv/partisia-staking/ \
-     && sudo chown -R staking:staking /srv/partisia-staking \
-     && sudo /usr/local/bin/partisia-restart.sh
+## Docker Deployment
+
+```yaml
+version: '3.8'
+services:
+  indexer:
+    build: .
+    environment:
+      - PARTISIA_API_URL=https://reader.partisiablockchain.com
+      - LS_CONTRACT=02fc82abf81cbb36acfe196faa1ad49ddfa7abdda6
+    depends_on:
+      - postgres
+    ports:
+      - "3002:3002"
+  
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ls_indexer
+      POSTGRES_USER: indexer
+      POSTGRES_PASSWORD: changeme
+    volumes:
+      - ./postgres_data:/var/lib/postgresql/data
 ```
 
-### 4 · Monitor service startup
-```bash
-sudo journalctl -fu partisia.service   # ⬅︎ watch logs until "active (running)"
-```
+## License
 
-**Note:** The restart script will prompt for the GPG passphrase interactively. This is required for security - no password files are stored on disk.
+MIT
 
-## Editing secrets in production
-
-> **📖 For detailed secret management, see [docs/production.md](docs/production.md)**
-
-### 1 · Decrypt → edit → re-encrypt:
-```bash
-# Prompt for password (will be used twice - for decrypt and encrypt)
-read -s -p "Enter GPG passphrase: " PASS
-echo
-
-# Decrypt into RAM‑based tmp file
-TMP=$(mktemp --tmpdir=/dev/shm env.XXXX)
-echo "$PASS" | gpg --batch --yes --decrypt \
-    --passphrase-fd 0 \
-    /etc/partisia-staking/.env.gpg > "$TMP"
-
-# Edit
-nano "$TMP"    # make changes
-
-# Re‑encrypt
-echo "$PASS" | gpg --batch --yes --symmetric --cipher-algo AES256 \
-    --passphrase-fd 0 \
-    --output /etc/partisia-staking/.env.gpg "$TMP"
-
-# Clean up
-shred -u "$TMP"
-unset PASS
-```
-
-### 2 · Restart the service (will prompt for password again):
-```bash
-sudo /usr/local/bin/partisia-restart.sh
-```
-
-## Quick health checks
-```bash
-# service status
-systemctl status partisia.service
-
-# running Node process (should be uid 999 = staking)
-ps -u staking -o pid,cmd
-
-# log tail
-journalctl -eu partisia.service --since "5 min ago"
-```
-
-## General instructions for Partisia
-
-### Build Liquid staking contract
-```
-~/git/partisia-defi/rust/liquid-staking$ cargo partisia-contract build --release
-```
-
-### Create autogenerated TypeScript code to interact with contracts
-Use ABI codegen tool to create. For public contracts (ZK node, large oracle, etc) you can download ABI from partisia browser (for example https://browser.partisiablockchain.com/contracts/04203b77743ad0ca831df9430a6be515195733ad91)
-```
-cargo pbc abi codegen --ts liquid_staking.abi generatedCode/liquid_staking.ts
-```
-
-### Deploy contract to testnet
-
-- Cooldown period and redeem length are in milliseconds.
-- Admin address is the one to change/set buy-in, clean expired unlock requests
-- Token decimal in Partisia should be 4
-- In testnet delegation expiration = 1 day, pending retracted 7 days --> unlock cooldown = 8 days (691200000ms), redeem period 1 day (86400000ms)
-
-```
-cargo pbc transaction deploy liquid_staking.pbc <token_address>
-<bot_address> <admin_address> <cooldown_length> <redeem_length>
-<init_buy_in> <liquid_token_name> <liquid_token_symbol>
-<liquid_token_decimal> --pk=contract.pk --gas=1700000
-```
-
-
-For example using MPC MPC20 contract (01615beb1c2bf57e45fcd1c4e67ef35b8735a685b1) in testnet:
-```
-cargo pbc transaction deploy liquid_staking.pbc 01615beb1c2bf57e45fcd1c4e67ef35b8735a685b1
-00c4ef6c65d4288f6c5564d7337f2f271fe8879d18 0012874c423b5d65bfa8fe41d0b2fd466567b50197 691200000 86400000
-0 "Sceptre sMPC" "sMPC" 4 --pk=contract.pk --gas=1700000
-```
-
-### Deploy contract to MAINNET
-
-- Cooldown period and redeem length are in milliseconds.
-- Cooldown 14 days ie. 1209600000 ms
-- Redeem period 2 days ie 172800000ms
-- Admin: 003b8c03f7ce4bdf1288e0344832d1dc3b62d87fb8 (verify before deploy)
-- Bot: 000016e01e04096e52e0a6021e877f01760552abfb (verify before deploy)
-- Admin address is the one to change/set buy-in, clean expired unlock requests
-- Bot address calls deposit, withdraw...
-- Token decimal in Partisia should be 4
-- MPC20 token address in mainnet 01615beb1c2bf57e45fcd1c4e67ef35b8735a685b1 (same as testnet)
-
-```
-cargo pbc transaction deploy liquid_staking.pbc <token_address>
-<bot_address> <admin_address> <cooldown_length> <redeem_length>
-<init_buy_in> <liquid_token_name> <liquid_token_symbol>
-<liquid_token_decimal> --pk=contract.pk --gas=1700000 --net=mainnet
-```
-
-
-For example using MPC MPC20 contract (01615beb1c2bf57e45fcd1c4e67ef35b8735a685b1):
-```
-cargo pbc transaction deploy liquid_staking.pbc 01615beb1c2bf57e45fcd1c4e67ef35b8735a685b1
-000016e01e04096e52e0a6021e877f01760552abfb 003b8c03f7ce4bdf1288e0344832d1dc3b62d87fb8 1209600000 172800000
-0 "Sceptre MPC" "sMPC"
-4 --pk=contract.pk --gas=1700000 --net=mainnet
-```
-
-### Allow the LS contract to spend MPC from BOT account (used for deposit function)
-
-When the BOT calls deposit, the contract moves MPC from bot account to LS contract. To allow this to happen, the BOT account has to approve the LS contract as spender:
-
-```
-cargo pbc transaction action --pk=user1.pk <token_address> approve <liquid_staking_address> <amount>
-```
-
-So to approve deposit for 100MPC with BOT account 025ec1b0d494c683cdfc51358e1eeac0f372c8a75a (01615beb1c2bf57e45fcd1c4e67ef35b8735a685b1 is MPC20 address):
-
-```
-cargo pbc transaction action --pk=testnet/bot.pk 01615beb1c2bf57e45fcd1c4e67ef35b8735a685b1 approve 025ec1b0d494c683cdfc51358e1eeac0f372c8a75a 1000000
-```
