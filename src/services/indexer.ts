@@ -1,140 +1,139 @@
 // src/services/indexer.ts
+// forward-only indexer - polls every second and detects missed blocks
+// 
+// this is really sad hack and will eventually break
+// meaning its unable to fetch any missed historical blocks
+// because their blockchain reader api does not support query
+// of historical data for some unknown reason
+
 import db from '../db/client';
 import config from '../config';
 import axios from 'axios';
+import { deserializeState } from '../abi/liquid_staking';
+import { Buffer } from 'buffer';
 
 class Indexer {
-  private running = false;
-  private currentBlock = 0;
-  private startTime = 0;
-  private processedBlocks = 0;
-  
-  // Configurable from environment
-  private readonly batchSize = parseInt(process.env.INDEXER_BATCH_SIZE || '500');
-  private readonly concurrency = parseInt(process.env.INDEXER_CONCURRENCY || '50');
-  
-  async start() {
-    this.running = true;
-    this.currentBlock = await db.getLatestBlock() || config.blockchain.deploymentBlock;
-    this.startTime = Date.now();
-    this.processedBlocks = 0;
-    
-    console.log(`Starting from block ${this.currentBlock}`);
-    console.log(`Config: batch=${this.batchSize}, concurrency=${this.concurrency}`);
-    this.scanBlocks();
-  }
+ private running = false;
+ private lastStateHash = '';
+ private shard = '';
+ private pollCount = 0;
+ private lastBlockHeight = 0;
+ private missedBlocks = 0;
 
-  async scanBlocks() {
-    while (this.running) {
-      try {
-        const latestResp = await axios.get(
-          `${config.blockchain.apiUrl}/chain/shards/Shard2/blocks`
-        );
-        const latestBlock = latestResp.data.blockTime;
-        
-        if (this.currentBlock >= latestBlock) {
-          await new Promise(r => setTimeout(r, config.indexer.intervalSeconds * 1000));
-          continue;
-        }
-        
-        const endBlock = Math.min(this.currentBlock + this.batchSize, latestBlock);
-        const blocks = [];
-        for (let b = this.currentBlock + 1; b <= endBlock; b++) {
-          blocks.push(b);
-        }
-        
-        // Process in concurrent batches
-        const results = [];
-        for (let i = 0; i < blocks.length; i += this.concurrency) {
-          const batch = blocks.slice(i, i + this.concurrency);
-          const batchResults = await Promise.all(
-            batch.map(block => this.fetchBlockState(block))
-          );
-          results.push(...batchResults);
-        }
-        
-        // Save states that changed
-        let lastState = null;
-        for (const result of results) {
-          if (result.state && (!lastState || this.stateChanged(lastState, result.state))) {
-            await this.saveState(result.block, result.state);
-            lastState = result.state;
-          }
-        }
-        
-        this.currentBlock = endBlock;
-        this.processedBlocks += blocks.length;
-        
-        // Calculate progress and ETA
-        const totalBlocks = latestBlock - config.blockchain.deploymentBlock;
-        const completed = this.currentBlock - config.blockchain.deploymentBlock;
-        const progress = (completed / totalBlocks * 100).toFixed(2);
-        
-        const elapsedMs = Date.now() - this.startTime;
-        const blocksPerMs = this.processedBlocks / elapsedMs;
-        const remainingBlocks = latestBlock - this.currentBlock;
-        const etaMs = remainingBlocks / blocksPerMs;
-        
-        const etaMinutes = Math.floor(etaMs / 60000);
-        const etaHours = Math.floor(etaMinutes / 60);
-        const etaStr = etaHours > 0 
-          ? `${etaHours}h ${etaMinutes % 60}m`
-          : `${etaMinutes}m`;
-        
-        const blocksPerSec = (blocksPerMs * 1000).toFixed(1);
-        
-        console.log(
-          `Block ${this.currentBlock}/${latestBlock} (${progress}%) | ` +
-          `Speed: ${blocksPerSec} blocks/s | ETA: ${etaStr}`
-        );
-        
-      } catch (error) {
-        console.error('Error:', error.message);
-        await new Promise(r => setTimeout(r, 5000));
-      }
-    }
-  }
+ async start() {
+   this.running = true;
+   
+   const contractResp = await axios.get(
+     `${config.blockchain.apiUrl}/chain/contracts/${config.blockchain.contractAddress}`
+   );
+   this.shard = contractResp.data.shardId;
+   
+   // Get last indexed block from database
+   this.lastBlockHeight = await db.getLatestBlock() || 0;
+   
+   console.log(`Starting LS Contract Indexer`);
+   console.log(`Contract: ${config.blockchain.contractAddress} on ${this.shard}`);
+   console.log(`Last indexed block: ${this.lastBlockHeight}`);
+   console.log(`Polling every 1s`);
+   
+   this.scanLoop();
+ }
 
-  async fetchBlockState(block: number) {
-    try {
-      const resp = await axios.get(
-        `${config.blockchain.apiUrl}/chain/contracts/${config.blockchain.contractAddress}?blockTime=${block}`,
-        { timeout: 5000 }
-      );
-      return { block, state: resp.data.serializedContract };
-    } catch (error) {
-      return { block, state: null };
-    }
-  }
+ async scanLoop() {
+   while (this.running) {
+     try {
+       // Get current block first
+       const blockResp = await axios.get(
+         `${config.blockchain.apiUrl}/chain/shards/${this.shard}/blocks`
+       );
+       const currentBlock = blockResp.data.blockTime;
+       
+       // Check for missed blocks
+       if (this.lastBlockHeight > 0 && currentBlock > this.lastBlockHeight + 1) {
+         const missed = currentBlock - this.lastBlockHeight - 1;
+         this.missedBlocks += missed;
+         console.error(`⚠️  ALERT: Missed ${missed} blocks! Gap from ${this.lastBlockHeight} to ${currentBlock}`);
+         console.error(`⚠️  Total missed blocks: ${this.missedBlocks}`);
+       }
+       
+       // Get contract state
+       const resp = await axios.get(
+         `${config.blockchain.apiUrl}/chain/contracts/${config.blockchain.contractAddress}`
+       );
+       
+       this.pollCount++;
+       
+       if (resp.data.serializedContract && resp.data.serializedContract !== this.lastStateHash) {
+         const stateBuffer = Buffer.from(resp.data.serializedContract, 'base64');
+         const decoded = deserializeState(stateBuffer);
+         
+         await this.saveState(currentBlock, decoded);
+         this.lastStateHash = resp.data.serializedContract;
+         this.lastBlockHeight = currentBlock;
+         
+         const stakeNum = Number(decoded.totalPoolStakeToken);
+         const liquidNum = Number(decoded.totalPoolLiquid);
+         const rate = liquidNum > 0 ? stakeNum / liquidNum : 1.0;
+         
+         console.log(`✅ State saved at block ${currentBlock}: rate=${rate.toFixed(6)}`);
+       } else {
+         // Update last block even if no state change
+         this.lastBlockHeight = currentBlock;
+         
+         if (this.pollCount % 60 === 0) {
+           console.log(`📊 Block ${currentBlock} - Polled ${this.pollCount} times, no changes, missed blocks: ${this.missedBlocks}`);
+         }
+       }
+       
+       await new Promise(r => setTimeout(r, 1000));
+       
+     } catch (error: any) {
+       console.error('Error:', error.message);
+       await new Promise(r => setTimeout(r, 5000));
+     }
+   }
+ }
 
-  stateChanged(prev: any, curr: any) {
-    return prev.totalPoolStakeToken !== curr.totalPoolStakeToken ||
-           prev.totalPoolLiquid !== curr.totalPoolLiquid ||
-           prev.stakeTokenBalance !== curr.stakeTokenBalance;
-  }
+ async saveState(block: number, state: any) {
+   const stakeNum = Number(state.totalPoolStakeToken);
+   const liquidNum = Number(state.totalPoolLiquid);
+   const rate = liquidNum > 0 ? stakeNum / liquidNum : 1.0;
+   
+   await db.saveContractState({
+     blockNumber: block,
+     timestamp: Date.now(),
+     totalPoolStakeToken: state.totalPoolStakeToken.toString(),
+     totalPoolLiquid: state.totalPoolLiquid.toString(),
+     exchangeRate: rate,
+     stakeTokenBalance: state.stakeTokenBalance.toString(),
+     buyInPercentage: state.buyInPercentage.toString(),
+     buyInEnabled: state.buyInEnabled
+   });
 
-  async saveState(block: number, state: any) {
-    const totalStake = BigInt(state.totalPoolStakeToken || 0);
-    const totalLiquid = BigInt(state.totalPoolLiquid || 0);
-    const rate = totalLiquid > 0n ? Number(totalStake * 1000000n / totalLiquid) / 1000000 : 1.0;
-    
-    await db.saveContractState({
-      blockNumber: block,
-      timestamp: Date.now(),
-      totalPoolStakeToken: totalStake.toString(),
-      totalPoolLiquid: totalLiquid.toString(),
-      exchangeRate: rate,
-      stakeTokenBalance: (BigInt(state.stakeTokenBalance || 0)).toString(),
-      buyInPercentage: state.buyInPercentage || '0',
-      buyInEnabled: state.buyInEnabled ?? true
-    });
-    
-    console.log(`State saved at block ${block}: rate=${rate.toFixed(6)}`);
-  }
+   await db.query(`
+     INSERT INTO current_state (id, block_number, timestamp, total_pool_stake_token,
+       total_pool_liquid, exchange_rate, stake_token_balance, buy_in_percentage, buy_in_enabled)
+     VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8)
+     ON CONFLICT (id) DO UPDATE SET
+       block_number = EXCLUDED.block_number,
+       timestamp = EXCLUDED.timestamp,
+       total_pool_stake_token = EXCLUDED.total_pool_stake_token,
+       total_pool_liquid = EXCLUDED.total_pool_liquid,
+       exchange_rate = EXCLUDED.exchange_rate,
+       stake_token_balance = EXCLUDED.stake_token_balance,
+       buy_in_percentage = EXCLUDED.buy_in_percentage,
+       buy_in_enabled = EXCLUDED.buy_in_enabled
+   `, [block, new Date(), state.totalPoolStakeToken.toString(), 
+       state.totalPoolLiquid.toString(), rate, state.stakeTokenBalance.toString(),
+       state.buyInPercentage.toString(), state.buyInEnabled]);
+ }
 
-  stop() {
-    this.running = false;
-  }
+ stop() {
+   this.running = false;
+   if (this.missedBlocks > 0) {
+     console.error(`⚠️  Indexer stopped with ${this.missedBlocks} total missed blocks`);
+   }
+ }
 }
 
 export default new Indexer();
