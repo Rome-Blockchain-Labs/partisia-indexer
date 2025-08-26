@@ -6,13 +6,21 @@ import axios from 'axios';
 class Indexer {
   private running = false;
   private currentBlock = 0;
-  private stateCache = new Map<number, any>();
+  private startTime = 0;
+  private processedBlocks = 0;
+  
+  // Configurable from environment
+  private readonly batchSize = parseInt(process.env.INDEXER_BATCH_SIZE || '500');
+  private readonly concurrency = parseInt(process.env.INDEXER_CONCURRENCY || '50');
   
   async start() {
     this.running = true;
     this.currentBlock = await db.getLatestBlock() || config.blockchain.deploymentBlock;
+    this.startTime = Date.now();
+    this.processedBlocks = 0;
     
     console.log(`Starting from block ${this.currentBlock}`);
+    console.log(`Config: batch=${this.batchSize}, concurrency=${this.concurrency}`);
     this.scanBlocks();
   }
 
@@ -29,27 +37,23 @@ class Indexer {
           continue;
         }
         
-        // Process in chunks of 100 blocks with 10 concurrent requests
-        const chunkSize = 100;
-        const concurrency = 10;
-        const endBlock = Math.min(this.currentBlock + chunkSize, latestBlock);
-        
+        const endBlock = Math.min(this.currentBlock + this.batchSize, latestBlock);
         const blocks = [];
         for (let b = this.currentBlock + 1; b <= endBlock; b++) {
           blocks.push(b);
         }
         
-        // Split into batches for concurrent processing
+        // Process in concurrent batches
         const results = [];
-        for (let i = 0; i < blocks.length; i += concurrency) {
-          const batch = blocks.slice(i, i + concurrency);
+        for (let i = 0; i < blocks.length; i += this.concurrency) {
+          const batch = blocks.slice(i, i + this.concurrency);
           const batchResults = await Promise.all(
             batch.map(block => this.fetchBlockState(block))
           );
           results.push(...batchResults);
         }
         
-        // Process results in order
+        // Save states that changed
         let lastState = null;
         for (const result of results) {
           if (result.state && (!lastState || this.stateChanged(lastState, result.state))) {
@@ -59,10 +63,30 @@ class Indexer {
         }
         
         this.currentBlock = endBlock;
+        this.processedBlocks += blocks.length;
         
-        const progress = ((this.currentBlock - config.blockchain.deploymentBlock) / 
-                         (latestBlock - config.blockchain.deploymentBlock) * 100).toFixed(2);
-        console.log(`Block ${this.currentBlock}/${latestBlock} (${progress}%)`);
+        // Calculate progress and ETA
+        const totalBlocks = latestBlock - config.blockchain.deploymentBlock;
+        const completed = this.currentBlock - config.blockchain.deploymentBlock;
+        const progress = (completed / totalBlocks * 100).toFixed(2);
+        
+        const elapsedMs = Date.now() - this.startTime;
+        const blocksPerMs = this.processedBlocks / elapsedMs;
+        const remainingBlocks = latestBlock - this.currentBlock;
+        const etaMs = remainingBlocks / blocksPerMs;
+        
+        const etaMinutes = Math.floor(etaMs / 60000);
+        const etaHours = Math.floor(etaMinutes / 60);
+        const etaStr = etaHours > 0 
+          ? `${etaHours}h ${etaMinutes % 60}m`
+          : `${etaMinutes}m`;
+        
+        const blocksPerSec = (blocksPerMs * 1000).toFixed(1);
+        
+        console.log(
+          `Block ${this.currentBlock}/${latestBlock} (${progress}%) | ` +
+          `Speed: ${blocksPerSec} blocks/s | ETA: ${etaStr}`
+        );
         
       } catch (error) {
         console.error('Error:', error.message);
