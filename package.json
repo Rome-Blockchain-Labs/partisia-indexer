@@ -8,8 +8,8 @@
     "api": "bun run src/api/endpoints.ts"
   },
   "dependencies": {
-    "@partisiablockchain/abi-client": "^5.235.0",
-    "@partisiablockchain/blockchain-api-transaction-client": "^5.178.0",
+    "@partisiablockchain/abi-client": "^5.255.0",
+    "@partisiablockchain/blockchain-api-transaction-client": "^5.181.0",
     "axios": "^1.11.0",
     "dotenv": "^16.6.1",
     "express": "^4.21.2",
