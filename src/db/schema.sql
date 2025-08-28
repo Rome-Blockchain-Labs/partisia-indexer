@@ -1,84 +1,92 @@
--- Main contract state tracking
-CREATE TABLE IF NOT EXISTS contract_states (
-   block_number BIGINT PRIMARY KEY,
-   timestamp TIMESTAMP NOT NULL,
-   total_pool_stake_token NUMERIC(30,0) NOT NULL,
-   total_pool_liquid NUMERIC(30,0) NOT NULL,
-   exchange_rate NUMERIC(30,10) NOT NULL,
-   stake_token_balance NUMERIC(30,0) NOT NULL,
-   buy_in_percentage INTEGER NOT NULL,
-   buy_in_enabled BOOLEAN NOT NULL
+-- Drop existing tables if needed
+DROP TABLE IF EXISTS contract_states CASCADE;
+DROP TABLE IF EXISTS current_state CASCADE;
+DROP TABLE IF EXISTS transactions CASCADE;
+DROP TABLE IF EXISTS protocol_rewards CASCADE;
+DROP TABLE IF EXISTS users CASCADE;
+DROP TABLE IF EXISTS price_history CASCADE;
+DROP TABLE IF EXISTS mpc_prices CASCADE;
+
+-- Main contract state history
+CREATE TABLE contract_states (
+  block_number BIGINT PRIMARY KEY,
+  timestamp TIMESTAMP NOT NULL,
+  total_pool_stake_token TEXT NOT NULL,
+  total_pool_liquid TEXT NOT NULL,
+  exchange_rate DECIMAL(20,10) NOT NULL,
+  stake_token_balance TEXT NOT NULL,
+  buy_in_percentage TEXT NOT NULL,
+  buy_in_enabled BOOLEAN NOT NULL DEFAULT false
 );
 
--- Current state (single row, constantly updated)
-CREATE TABLE IF NOT EXISTS current_state (
-   id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-   block_number BIGINT NOT NULL,
-   timestamp TIMESTAMP NOT NULL,
-   total_pool_stake_token NUMERIC(30,0) NOT NULL,
-   total_pool_liquid NUMERIC(30,0) NOT NULL,
-   exchange_rate NUMERIC(30,10) NOT NULL,
-   stake_token_balance NUMERIC(30,0) NOT NULL,
-   buy_in_percentage INTEGER NOT NULL,
-   buy_in_enabled BOOLEAN NOT NULL
+-- Current state (single row, always updated)
+CREATE TABLE current_state (
+  id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  block_number BIGINT NOT NULL,
+  timestamp TIMESTAMP NOT NULL,
+  total_pool_stake_token TEXT NOT NULL,
+  total_pool_liquid TEXT NOT NULL,
+  exchange_rate DECIMAL(20,10) NOT NULL,
+  stake_token_balance TEXT NOT NULL,
+  buy_in_percentage TEXT NOT NULL,
+  buy_in_enabled BOOLEAN NOT NULL DEFAULT false
 );
 
--- Exchange rate history (redundant but kept for compatibility)
-CREATE TABLE IF NOT EXISTS exchange_rates (
-   block_time BIGINT PRIMARY KEY,
-   rate NUMERIC(30,10) NOT NULL,
-   total_stake NUMERIC(30,0) NOT NULL,
-   total_liquid NUMERIC(30,0) NOT NULL,
-   timestamp TIMESTAMP NOT NULL
+-- Transaction history
+CREATE TABLE transactions (
+  tx_hash TEXT PRIMARY KEY,
+  block_number BIGINT NOT NULL,
+  timestamp TIMESTAMP NOT NULL,
+  action TEXT NOT NULL,
+  sender TEXT NOT NULL,
+  amount TEXT,
+  metadata JSONB
 );
 
 -- Protocol rewards tracking
-CREATE TABLE IF NOT EXISTS protocol_rewards (
-   id SERIAL PRIMARY KEY,
-   block_time BIGINT NOT NULL,
-   amount NUMERIC(30,0) NOT NULL,
-   rate_before NUMERIC(30,10),
-   rate_after NUMERIC(30,10),
-   timestamp TIMESTAMP NOT NULL
+CREATE TABLE protocol_rewards (
+  id SERIAL PRIMARY KEY,
+  block_number BIGINT NOT NULL,
+  amount TEXT NOT NULL,
+  timestamp TIMESTAMP NOT NULL
 );
 
--- Transaction tracking
-CREATE TABLE IF NOT EXISTS transactions (
-   tx_hash VARCHAR(66) PRIMARY KEY,
-   block_time BIGINT,
-   block_number BIGINT,
-   action_code INTEGER,
-   action VARCHAR(50),
-   sender VARCHAR(66),
-   amount NUMERIC(30,0),
-   rate_at_tx NUMERIC(30,10),
-   timestamp TIMESTAMP NOT NULL,
-   raw_content TEXT,
-   metadata JSONB
+-- User balances
+CREATE TABLE users (
+  address TEXT PRIMARY KEY,
+  balance TEXT NOT NULL DEFAULT '0',
+  first_seen TIMESTAMP NOT NULL DEFAULT NOW(),
+  last_seen TIMESTAMP NOT NULL DEFAULT NOW(),
+  last_block BIGINT
 );
 
--- User tracking
-CREATE TABLE IF NOT EXISTS users (
-   address VARCHAR(66) PRIMARY KEY,
-   first_seen TIMESTAMP NOT NULL,
-   last_seen TIMESTAMP NOT NULL,
-   balance NUMERIC(30,0)
+-- Historical MPC token prices from CoinGecko
+CREATE TABLE price_history (
+  id SERIAL PRIMARY KEY,
+  timestamp TIMESTAMP NOT NULL,
+  price_usd DECIMAL(20,10) NOT NULL,
+  market_cap_usd DECIMAL(30,2),
+  volume_24h_usd DECIMAL(30,2),
+  UNIQUE(timestamp)
 );
 
-CREATE TABLE IF NOT EXISTS user_actions (
-   id SERIAL PRIMARY KEY,
-   user_address VARCHAR(66),
-   action VARCHAR(50),
-   amount NUMERIC(30,0),
-   block_time BIGINT,
-   timestamp TIMESTAMP
+-- MPC prices tied to blocks
+CREATE TABLE mpc_prices (
+  block_number BIGINT PRIMARY KEY,
+  timestamp TIMESTAMP NOT NULL,
+  price_usd DECIMAL(20,10) NOT NULL,
+  market_cap_usd DECIMAL(30,2),
+  volume_24h_usd DECIMAL(30,2),
+  price_change_24h DECIMAL(10,4)
 );
 
--- Indexes
-CREATE INDEX IF NOT EXISTS idx_states_timestamp ON contract_states(timestamp DESC);
-CREATE INDEX IF NOT EXISTS idx_current_state ON current_state(block_number DESC);
-CREATE INDEX IF NOT EXISTS idx_rates_timestamp ON exchange_rates(timestamp DESC);
-CREATE INDEX IF NOT EXISTS idx_rewards_timestamp ON protocol_rewards(timestamp DESC);
-CREATE INDEX IF NOT EXISTS idx_tx_block ON transactions(block_time DESC);
-CREATE INDEX IF NOT EXISTS idx_users_balance ON users(balance DESC);
-CREATE INDEX IF NOT EXISTS idx_user_actions ON user_actions(user_address, timestamp DESC);
+-- Indexes for performance
+CREATE INDEX idx_contract_states_timestamp ON contract_states(timestamp DESC);
+CREATE INDEX idx_contract_states_exchange_rate ON contract_states(exchange_rate);
+CREATE INDEX idx_transactions_block ON transactions(block_number DESC);
+CREATE INDEX idx_transactions_sender ON transactions(sender);
+CREATE INDEX idx_transactions_action ON transactions(action);
+CREATE INDEX idx_protocol_rewards_block ON protocol_rewards(block_number DESC);
+CREATE INDEX idx_users_balance ON users(balance DESC);
+CREATE INDEX idx_price_history_timestamp ON price_history(timestamp DESC);
+CREATE INDEX idx_mpc_prices_timestamp ON mpc_prices(timestamp DESC);
