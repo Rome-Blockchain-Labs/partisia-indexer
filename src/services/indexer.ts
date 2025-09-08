@@ -65,13 +65,13 @@ class Indexer {
             parseInt(resp.data.account.latestStorageFeeTime) : undefined
         };
       }
-    } catch {}
+    } catch (err) { console.error(`Block ${block} fetch failed:`, err); }
     return null;
   }
 
   async indexLoop() {
-  const batchSize = parseInt(process.env.INDEXER_BATCH_SIZE || '1000');
-  const concurrency = parseInt(process.env.INDEXER_CONCURRENCY || '10');
+    const batchSize = parseInt(process.env.INDEXER_BATCH_SIZE || '1000');
+    const concurrency = parseInt(process.env.INDEXER_CONCURRENCY || '10');
     const totalPerBatch = batchSize * concurrency;
 
     while (this.running) {
@@ -104,10 +104,12 @@ class Indexer {
       }
 
       const allStates: BlockState[] = [];
+      const MAX_STATES = 1000;
       for (let i = 0; i < promises.length; i += concurrency) {
         const chunk = promises.slice(i, Math.min(i + concurrency, promises.length));
         const results = await Promise.all(chunk);
         allStates.push(...results.filter(r => r !== null) as BlockState[]);
+        if (allStates.length > MAX_STATES) break;
       }
 
       allStates.sort((a, b) => a.block - b.block);
@@ -120,7 +122,7 @@ class Indexer {
 
           const stakeNum = Number(decoded.totalPoolStakeToken);
           const liquidNum = Number(decoded.totalPoolLiquid);
-          const rate = liquidNum > 0 ? stakeNum / liquidNum : 1.0;
+          const rate = liquidNum > 0 ? (stakeNum * 1e10) / liquidNum / 1e10 : 1.0;
           const timestamp = blockState.timestamp 
             ? new Date(blockState.timestamp) 
             : new Date();
