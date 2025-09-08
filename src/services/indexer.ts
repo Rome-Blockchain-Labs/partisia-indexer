@@ -1,207 +1,229 @@
-import db from '../db/client';
-import config from '../config';
 import axios from 'axios';
-import { deserializeState } from '../abi/liquid_staking';
-import { Buffer } from 'buffer';
+import { Pool } from 'pg';
+import dotenv from 'dotenv';
 
-interface BlockState {
-  block: number;
-  state: string;
-  timestamp?: number;
-}
+dotenv.config();
+
+const CONTRACT_ADDRESS = process.env.LS_CONTRACT || '02fc82abf81cbb36acfe196faa1ad49ddfa7abdda6';
+const pool = new Pool({
+  host: process.env.DB_HOST,
+  port: parseInt(process.env.DB_PORT || '5432'),
+  database: process.env.DB_NAME,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD
+});
 
 class Indexer {
   private running = false;
-  private shard = '';
-  private currentBlock = 0;
-  private lastStateHash = '';
-  private startTime = 0;
-  private blocksProcessed = 0;
+  private failedBlocks: Map<number, number> = new Map(); // block -> retry count
+  private processingBlocks: Set<number> = new Set();
 
   async start() {
     this.running = true;
-    this.startTime = Date.now();
+    console.log('Indexer started');
 
-    const contractResp = await axios.get(
-      `${config.blockchain.apiUrl}/chain/contracts/${config.blockchain.contractAddress}`
-    );
-    this.shard = contractResp.data.shardId;
+    while (this.running) {
+      try {
+        // retry failed blocks first
+        await this.retryFailedBlocks();
 
-    const result = await db.query('SELECT MAX(block_number) as max_block FROM contract_states');
-    const lastIndexed = parseInt(result.rows[0]?.max_block) || 0;
+        // get current chain state
+        const currentBlock = await this.getCurrentBlock();
+        let lastIndexed = await this.getLastIndexedBlock();
+        if (lastIndexed === 0) lastIndexed = parseInt(process.env.DEPLOYMENT_BLOCK || "0");
 
-    if (lastIndexed > 100000000) {
-      throw new Error(`Invalid block number in DB: ${lastIndexed}`);
+        if (currentBlock && lastIndexed !== null) {
+          const gap = currentBlock - lastIndexed;
+
+          if (gap > 1) {
+            // process in batches
+            const batchSize = Math.min(gap - 1, parseInt(process.env.INDEXER_BATCH_SIZE || '100'));
+            const blocks = Array.from({length: batchSize}, (_, i) => lastIndexed + i + 1);
+
+            console.log(`📦 Fetching blocks ${blocks[0]} to ${blocks[blocks.length - 1]}`);
+            await this.processBlocks(blocks);
+          }
+        }
+
+        await new Promise(r => setTimeout(r, parseInt(process.env.INDEX_INTERVAL_S || '10') * 1000));
+      } catch (error) {
+        console.error('Indexer loop error:', error);
+        await new Promise(r => setTimeout(r, 5000));
+      }
     }
 
-    this.currentBlock = lastIndexed ? lastIndexed + 1 : config.blockchain.deploymentBlock;
-
-    const batchSize = parseInt(process.env.INDEXER_BATCH_SIZE || '1000');
-    const concurrency = parseInt(process.env.INDEXER_CONCURRENCY || '10');
-
-    console.log(`📌 Contract: ${config.blockchain.contractAddress} on ${this.shard}`);
-    console.log(`⚡ Config: ${concurrency} parallel × ${batchSize} blocks`);
-    console.log(`🚀 Resume from block ${this.currentBlock}`);
-
-    this.indexLoop();
+    console.log('Indexer stopped');
   }
 
-  async getCurrentBlock(): Promise<number> {
-    const resp = await axios.get(`${config.blockchain.apiUrl}/chain/shards/${this.shard}/blocks`);
-    return resp.data.blockTime || 0;
+  stop() {
+    this.running = false;
   }
 
-  async fetchBlock(block: number): Promise<BlockState | null> {
-    try {
-      const resp = await axios.get(
-        `${config.blockchain.apiUrl}/chain/contracts/${config.blockchain.contractAddress}?blockTime=${block}`
-      );
+  async retryFailedBlocks() {
+    if (this.failedBlocks.size === 0) return;
 
-      if (resp.data.serializedContract) {
-        return { 
-          block, 
-          state: resp.data.serializedContract,
-          timestamp: resp.data.account?.latestStorageFeeTime ? 
-            parseInt(resp.data.account.latestStorageFeeTime) : undefined
-        };
+    const blocks = Array.from(this.failedBlocks.keys());
+    console.log(`Retrying ${blocks.length} failed blocks`);
+
+    for (const block of blocks) {
+      if (this.processingBlocks.has(block)) continue;
+
+      const retryCount = this.failedBlocks.get(block) || 0;
+      if (retryCount > 10) {
+        console.error(`Block ${block} failed too many times, manual intervention needed`);
+        continue;
       }
-    } catch (err) { console.error(`Block ${block} fetch failed:`, err); }
+
+      this.processingBlocks.add(block);
+
+      try {
+        const data = await this.fetchBlockWithRetry(block, 5);
+        if (data && data.state) {
+          await this.storeBlock(data);
+          this.failedBlocks.delete(block);
+          console.log(`Successfully recovered block ${block}`);
+        } else {
+          this.failedBlocks.set(block, retryCount + 1);
+        }
+      } finally {
+        this.processingBlocks.delete(block);
+      }
+    }
+  }
+
+  async fetchBlockWithRetry(block: number, maxRetries: number): Promise<any> {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        const resp = await axios.get(
+          `${process.env.PARTISIA_API_URL}/chain/contracts/${CONTRACT_ADDRESS}?blockTime=${block}`,
+          { timeout: 10000 }
+        );
+
+        if (resp.data?.serializedContract) {
+          return {
+            block,
+            timestamp: new Date(resp.data.account?.latestStorageFeeTime ? parseInt(resp.data.account.latestStorageFeeTime) : Date.now()),
+            state: require("../abi/liquid_staking").deserializeState(Buffer.from(resp.data.serializedContract, "base64")),
+            latestStorageFeeTime: resp.data.account.latestStorageFeeTime ?
+              parseInt(resp.data.account.latestStorageFeeTime) : undefined
+          };
+        }
+        return null;
+      } catch (err: any) {
+        if (err.response?.status === 429) {
+          const delay = Math.min(1000 * Math.pow(2, attempt), 60000);
+          console.log(`Rate limited on block ${block}, waiting ${delay}ms`);
+          await new Promise(r => setTimeout(r, delay));
+        } else if (err.code === 'ECONNRESET' || err.code === 'ETIMEDOUT') {
+          const delay = 2000 * (attempt + 1);
+          console.log(`Network error on block ${block}, waiting ${delay}ms`);
+          await new Promise(r => setTimeout(r, delay));
+        } else if (attempt === maxRetries) {
+          console.error(`Block ${block} failed permanently:`, err.message);
+          return null;
+        }
+      }
+    }
     return null;
   }
 
-  async indexLoop() {
-    const batchSize = parseInt(process.env.INDEXER_BATCH_SIZE || '1000');
+  async processBlocks(blocks: number[]) {
     const concurrency = parseInt(process.env.INDEXER_CONCURRENCY || '10');
-    const totalPerBatch = batchSize * concurrency;
 
-    while (this.running) {
-      const tipBlock = await this.getCurrentBlock();
+    for (let i = 0; i < blocks.length; i += concurrency) {
+      const batch = blocks.slice(i, i + concurrency);
 
-      if (!tipBlock || tipBlock === 0) {
-        console.error('Invalid tip block:', tipBlock);
-        await new Promise(r => setTimeout(r, 5000));
-        continue;
-      }
+      await Promise.all(batch.map(async (block) => {
+        if (this.processingBlocks.has(block)) return;
 
-      // if caught up, wait for new blocks
-      if (this.currentBlock >= tipBlock) {
-        await new Promise(r => setTimeout(r, 10000));
-        continue;
-      }
+        this.processingBlocks.add(block);
 
-      const remaining = tipBlock - this.currentBlock;
-      const blocksToFetch = Math.min(totalPerBatch, remaining);
+        try {
+          const data = await this.fetchBlockWithRetry(block, 3);
+          if (data && data.state) {
+            await this.storeBlock(data);
+          } else {
+            this.failedBlocks.set(block, 0);
+            console.warn(`Block ${block} added to retry queue`);
+          }
+        } finally {
+          this.processingBlocks.delete(block);
+        }
+      }));
+    }
+  }
 
-      // skip if nothing to fetch
-      if (blocksToFetch <= 0) {
-        await new Promise(r => setTimeout(r, 10000));
-        continue;
-      }
+  async storeBlock(data: any) {
+    const { block, timestamp, state } = data;
 
-      const promises: Promise<BlockState | null>[] = [];
-      for (let i = 0; i < blocksToFetch; i++) {
-        promises.push(this.fetchBlock(this.currentBlock + i));
-      }
-
-      const allStates: BlockState[] = [];
-      const MAX_STATES = 1000;
-      for (let i = 0; i < promises.length; i += concurrency) {
-        const chunk = promises.slice(i, Math.min(i + concurrency, promises.length));
-        const results = await Promise.all(chunk);
-        allStates.push(...results.filter(r => r !== null) as BlockState[]);
-        if (allStates.length > MAX_STATES) break;
-      }
-
-      allStates.sort((a, b) => a.block - b.block);
-
-      let changes = 0;
-      for (const blockState of allStates) {
-        if (blockState.state !== this.lastStateHash) {
-          const stateBuffer = Buffer.from(blockState.state, 'base64');
-          const decoded = deserializeState(stateBuffer);
-
-          const stakeNum = Number(decoded.totalPoolStakeToken);
-          const liquidNum = Number(decoded.totalPoolLiquid);
-          const rate = liquidNum > 0 ? (stakeNum * 1e10) / liquidNum / 1e10 : 1.0;
-          const timestamp = blockState.timestamp 
-            ? new Date(blockState.timestamp) 
-            : new Date();
-
-          await db.query(`
+    try {
+      await pool.query(`
 INSERT INTO contract_states (
 block_number, timestamp, total_pool_stake_token, total_pool_liquid,
 exchange_rate, stake_token_balance, buy_in_percentage, buy_in_enabled
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 ON CONFLICT (block_number) DO NOTHING
 `, [
-              blockState.block,
-              timestamp,
-              decoded.totalPoolStakeToken.toString(),
-              decoded.totalPoolLiquid.toString(),
-              rate,
-              decoded.stakeTokenBalance.toString(),
-              decoded.buyInPercentage.toString(),
-              decoded.buyInEnabled
-            ]);
+          block,
+          timestamp,
+          state.totalPoolStakeToken || '0',
+          state.totalPoolLiquid || '0',
+          state.exchangeRate || 1.0,
+          state.stakeTokenBalance || '0',
+          state.buyInPercentage || '0',
+          state.buyInEnabled || false
+        ]);
 
-          await db.query(`
-INSERT INTO current_state (id, block_number, timestamp, total_pool_stake_token,
-total_pool_liquid, exchange_rate, stake_token_balance, buy_in_percentage, buy_in_enabled)
-VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8)
+      await pool.query(`
+INSERT INTO current_state (
+id, block_number, timestamp, total_pool_stake_token, total_pool_liquid,
+exchange_rate, stake_token_balance, buy_in_percentage, buy_in_enabled
+) VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8)
 ON CONFLICT (id) DO UPDATE SET
-block_number = EXCLUDED.block_number,
-timestamp = EXCLUDED.timestamp,
-total_pool_stake_token = EXCLUDED.total_pool_stake_token,
-total_pool_liquid = EXCLUDED.total_pool_liquid,
-exchange_rate = EXCLUDED.exchange_rate,
-stake_token_balance = EXCLUDED.stake_token_balance,
-buy_in_percentage = EXCLUDED.buy_in_percentage,
-buy_in_enabled = EXCLUDED.buy_in_enabled
+block_number = $1, timestamp = $2, total_pool_stake_token = $3,
+total_pool_liquid = $4, exchange_rate = $5, stake_token_balance = $6,
+buy_in_percentage = $7, buy_in_enabled = $8
+WHERE current_state.block_number < $1
 `, [
-              blockState.block,
-              timestamp,
-              decoded.totalPoolStakeToken.toString(),
-              decoded.totalPoolLiquid.toString(),
-              rate,
-              decoded.stakeTokenBalance.toString(),
-              decoded.buyInPercentage.toString(),
-              decoded.buyInEnabled
-            ]);
-
-          this.lastStateHash = blockState.state;
-          changes++;
-        }
-      }
-
-      const oldBlock = this.currentBlock;
-      this.currentBlock += blocksToFetch;
-      this.blocksProcessed += blocksToFetch;
-
-      const elapsed = (Date.now() - this.startTime) / 1000;
-      const blocksPerSec = this.blocksProcessed / elapsed;
-      const blocksRemaining = tipBlock - this.currentBlock;
-      const etaSeconds = blocksRemaining / blocksPerSec;
-
-      console.log(
-        `📦 ${oldBlock}-${this.currentBlock - 1}: ${changes} changes | ` +
-          `${blocksPerSec.toFixed(0)} blocks/s | ` +
-          `${((this.currentBlock / tipBlock) * 100).toFixed(2)}% | ` +
-          `ETA: ${this.formatETA(etaSeconds)}`
-      );
+          block,
+          timestamp,
+          state.totalPoolStakeToken || '0',
+          state.totalPoolLiquid || '0',
+          state.exchangeRate || 1.0,
+          state.stakeTokenBalance || '0',
+          state.buyInPercentage || '0',
+          state.buyInEnabled || false
+        ]);
+    } catch (err) {
+      console.error(`Failed to store block ${block}:`, err);
+      throw err;
     }
   }
 
-  formatETA(seconds: number): string {
-    if (!isFinite(seconds) || seconds < 0) return 'calculating';
-    const h = Math.floor(seconds / 3600);
-    const m = Math.floor((seconds % 3600) / 60);
-    if (h > 0) return `${h}h ${m}m`;
-    return `${m}m ${Math.floor(seconds % 60)}s`;
+  async getCurrentBlock(): Promise<number | null> {
+    try {
+      const resp = await axios.get(`${process.env.PARTISIA_API_URL}/chain/shards/Shard2/blocks`);
+      return resp.data?.blockTime ?? null;
+    } catch (err) {
+      console.error("Failed to get current block:", err);
+      return null;
+    }
   }
 
-  stop() {
-    this.running = false;
+  async getLastIndexedBlock(): Promise<number | null> {
+    const result = await pool.query(
+      'SELECT MAX(block_number) as last_block FROM contract_states'
+    );
+    return parseInt(result.rows[0]?.last_block) || 0;
   }
 }
 
-export default new Indexer();
+const indexer = new Indexer();
+
+process.on('SIGINT', () => {
+  console.log('\nShutting down...');
+  indexer.stop();
+  setTimeout(() => process.exit(0), 5000);
+});
+
+export default indexer;

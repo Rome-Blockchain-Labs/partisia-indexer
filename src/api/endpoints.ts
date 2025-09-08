@@ -141,29 +141,78 @@ app.get('/stats', async (req, res) => {
   }
 });
 
-// APY calculation
+// APY calculation with intelligent data point selection
 app.get('/apy', async (req, res) => {
   try {
-    const result = await pool.query(`
-WITH rate_data AS (
-SELECT
-exchange_rate,
-timestamp,
-LAG(exchange_rate, 144) OVER (ORDER BY block_number) as rate_24h_ago,
-LAG(exchange_rate, 1008) OVER (ORDER BY block_number) as rate_7d_ago,
-LAG(exchange_rate, 4320) OVER (ORDER BY block_number) as rate_30d_ago
-FROM contract_states
-WHERE timestamp > NOW() - INTERVAL '31 days'
-ORDER BY block_number DESC
-LIMIT 1
-)
-SELECT
-COALESCE(((exchange_rate / NULLIF(rate_24h_ago, 0) - 1) * 365 * 100), 0)::numeric(10,4) as apy_24h,
-COALESCE(((exchange_rate / NULLIF(rate_7d_ago, 0) - 1) * 52 * 100), 0)::numeric(10,4) as apy_7d,
-COALESCE(((exchange_rate / NULLIF(rate_30d_ago, 0) - 1) * 12 * 100), 0)::numeric(10,4) as apy_30d
-FROM rate_data
+    // Get all data points with timestamps
+    const allData = await pool.query(`
+SELECT exchange_rate, timestamp 
+FROM contract_states 
+ORDER BY timestamp ASC
 `);
-    res.json(result.rows[0] || { apy_24h: 0, apy_7d: 0, apy_30d: 0 });
+
+    if (allData.rows.length < 2) {
+      return res.json({
+        apy_24h: null,
+        apy_7d: null,
+        apy_30d: null,
+        note: "Insufficient data for APY calculation"
+      });
+    }
+
+    const now = new Date();
+    const points = allData.rows;
+    const latest = points[points.length - 1];
+
+    // Find best data points for each period
+    const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+    // Find closest points to target times
+    const findClosest = (targetTime) => {
+      let closest = points[0];
+      let minDiff = Math.abs(new Date(points[0].timestamp).getTime() - targetTime.getTime());
+
+      for (const point of points) {
+        const diff = Math.abs(new Date(point.timestamp).getTime() - targetTime.getTime());
+        if (diff < minDiff && new Date(point.timestamp) < now) {
+          minDiff = diff;
+          closest = point;
+        }
+      }
+      return closest;
+    };
+
+    const dayPoint = findClosest(oneDayAgo);
+    const weekPoint = findClosest(sevenDaysAgo);
+    const monthPoint = findClosest(thirtyDaysAgo);
+
+    // Calculate APYs
+    const calculateAPY = (oldPoint, newPoint) => {
+      const timeDiff = (new Date(newPoint.timestamp).getTime() - new Date(oldPoint.timestamp).getTime()) / (1000 * 60 * 60 * 24);
+      if (timeDiff <= 0) return null;
+
+      const rateChange = (parseFloat(newPoint.exchange_rate) / parseFloat(oldPoint.exchange_rate)) - 1;
+      return (rateChange * 365 / timeDiff * 100);
+    };
+
+    const apy24h = dayPoint !== latest ? calculateAPY(dayPoint, latest) : null;
+    const apy7d = weekPoint !== latest ? calculateAPY(weekPoint, latest) : null;
+    const apy30d = monthPoint !== latest ? calculateAPY(monthPoint, latest) : null;
+
+    // If we don't have enough historical data, extrapolate from what we have
+    const oldestPoint = points[0];
+    const fallbackAPY = calculateAPY(oldestPoint, latest);
+
+    res.json({
+      apy_24h: apy24h !== null ? apy24h.toFixed(2) : (fallbackAPY !== null ? fallbackAPY.toFixed(2) : "0.00"),
+      apy_7d: apy7d !== null ? apy7d.toFixed(2) : (fallbackAPY !== null ? fallbackAPY.toFixed(2) : "0.00"),
+      apy_30d: apy30d !== null ? apy30d.toFixed(2) : (fallbackAPY !== null ? fallbackAPY.toFixed(2) : "0.00"),
+      note: fallbackAPY !== null && (apy24h === null || apy7d === null || apy30d === null) 
+        ? `Extrapolated from ${Math.floor((new Date(latest.timestamp).getTime() - new Date(oldestPoint.timestamp).getTime()) / (1000 * 60 * 60 * 24))} days of data`
+        : undefined
+    });
   } catch (error) {
     console.error('Error calculating APY:', error);
     res.status(500).json({ error: 'Failed to calculate APY' });
@@ -232,11 +281,11 @@ app.get('/stats/combined', async (req, res) => {
       },
       tvl: {
         tokens: totalStaked.toString(),
-        usd: (Number(totalStaked) / 1e18 * currentPrice).toFixed(2)
+        usd: (Number(totalStaked) / 1e6 * currentPrice).toFixed(2)
       },
       liquid_supply: {
         tokens: totalLiquid.toString(),
-        usd: (Number(totalLiquid) / 1e18 * currentPrice).toFixed(2)
+        usd: (Number(totalLiquid) / 1e6 * currentPrice).toFixed(2)
       },
       exchange_rate: current.rows[0]?.exchange_rate,
       current_block: current.rows[0]?.block_number

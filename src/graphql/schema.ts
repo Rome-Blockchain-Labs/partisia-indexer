@@ -175,7 +175,7 @@ export const schema = createSchema({
           exchangeRate: s?.exchange_rate || '1.0',
           totalStaked: s?.total_pool_stake_token || '0',
           totalLiquid: s?.total_pool_liquid || '0',
-          tvlUsd: (Number(staked) / 1e18 * p).toFixed(2)
+          tvlUsd: (Number(staked) / 1e6 * p).toFixed(2)
         }
       },
       
@@ -200,9 +200,9 @@ export const schema = createSchema({
         const result = await pool.query(
           `SELECT timestamp, price_usd, market_cap_usd, volume_24h_usd 
            FROM price_history 
-           WHERE timestamp > NOW() - INTERVAL '${hours} hours'
-           ORDER BY timestamp DESC`
-        )
+           WHERE timestamp > NOW() - INTERVAL '1 hour' * $1
+           ORDER BY timestamp DESC`,
+          [hours])
         return result.rows.map(r => ({
           timestamp: r.timestamp.toISOString(),
           priceUsd: parseFloat(r.price_usd),
