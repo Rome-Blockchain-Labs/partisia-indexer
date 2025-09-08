@@ -24,31 +24,40 @@ class Indexer {
 
     while (this.running) {
       try {
-        // retry failed blocks first
         await this.retryFailedBlocks();
 
-        // get current chain state
         const currentBlock = await this.getCurrentBlock();
         let lastIndexed = await this.getLastIndexedBlock();
-        if (lastIndexed === 0) lastIndexed = parseInt(process.env.DEPLOYMENT_BLOCK || "0");
+        if (lastIndexed === 0) {
+          lastIndexed = parseInt(process.env.DEPLOYMENT_BLOCK || '0');
+        }
 
         if (currentBlock && lastIndexed !== null) {
           const gap = currentBlock - lastIndexed;
 
           if (gap > 1) {
-            // process in batches
-            const batchSize = Math.min(gap - 1, parseInt(process.env.INDEXER_BATCH_SIZE || '100'));
-            const blocks = Array.from({length: batchSize}, (_, i) => lastIndexed + i + 1);
+            const batchSize = Math.min(
+              gap - 1,
+              parseInt(process.env.INDEXER_BATCH_SIZE || '100')
+            );
+            const blocks = Array.from(
+              { length: batchSize },
+              (_, i) => lastIndexed + i + 1
+            );
 
-            console.log(`📦 Fetching blocks ${blocks[0]} to ${blocks[blocks.length - 1]}`);
+            console.log(
+              `📦 Fetching blocks ${blocks[0]} to ${blocks[blocks.length - 1]}`
+            );
             await this.processBlocks(blocks);
           }
         }
 
-        await new Promise(r => setTimeout(r, parseInt(process.env.INDEX_INTERVAL_S || '10') * 1000));
+        await new Promise((r) =>
+          setTimeout(r, parseInt(process.env.INDEX_INTERVAL_S || '10') * 100)
+        );
       } catch (error) {
         console.error('Indexer loop error:', error);
-        await new Promise(r => setTimeout(r, 5000));
+        await new Promise((r) => setTimeout(r, 5000));
       }
     }
 
@@ -70,7 +79,9 @@ class Indexer {
 
       const retryCount = this.failedBlocks.get(block) || 0;
       if (retryCount > 10) {
-        console.error(`Block ${block} failed too many times, manual intervention needed`);
+        console.error(
+          `Block ${block} failed too many times, manual intervention needed`
+        );
         continue;
       }
 
@@ -102,10 +113,17 @@ class Indexer {
         if (resp.data?.serializedContract) {
           return {
             block,
-            timestamp: new Date(resp.data.account?.latestStorageFeeTime ? parseInt(resp.data.account.latestStorageFeeTime) : Date.now()),
-            state: require("../abi/liquid_staking").deserializeState(Buffer.from(resp.data.serializedContract, "base64")),
-            latestStorageFeeTime: resp.data.account.latestStorageFeeTime ?
-              parseInt(resp.data.account.latestStorageFeeTime) : undefined
+            timestamp: new Date(
+              resp.data.account?.latestStorageFeeTime
+                ? parseInt(resp.data.account.latestStorageFeeTime)
+                : Date.now()
+            ),
+            state: require('../abi/liquid_staking').deserializeState(
+              Buffer.from(resp.data.serializedContract, 'base64')
+            ),
+            latestStorageFeeTime: resp.data.account.latestStorageFeeTime
+              ? parseInt(resp.data.account.latestStorageFeeTime)
+              : undefined
           };
         }
         return null;
@@ -113,11 +131,11 @@ class Indexer {
         if (err.response?.status === 429) {
           const delay = Math.min(1000 * Math.pow(2, attempt), 60000);
           console.log(`Rate limited on block ${block}, waiting ${delay}ms`);
-          await new Promise(r => setTimeout(r, delay));
+          await new Promise((r) => setTimeout(r, delay));
         } else if (err.code === 'ECONNRESET' || err.code === 'ETIMEDOUT') {
           const delay = 2000 * (attempt + 1);
           console.log(`Network error on block ${block}, waiting ${delay}ms`);
-          await new Promise(r => setTimeout(r, delay));
+          await new Promise((r) => setTimeout(r, delay));
         } else if (attempt === maxRetries) {
           console.error(`Block ${block} failed permanently:`, err.message);
           return null;
@@ -128,12 +146,9 @@ class Indexer {
   }
 
   async processBlocks(blocks: number[]) {
-    const concurrency = parseInt(process.env.INDEXER_CONCURRENCY || '10');
-
-    for (let i = 0; i < blocks.length; i += concurrency) {
-      const batch = blocks.slice(i, i + concurrency);
-
-      await Promise.all(batch.map(async (block) => {
+    // Launch entire batch concurrently
+    await Promise.all(
+      blocks.map(async (block) => {
         if (this.processingBlocks.has(block)) return;
 
         this.processingBlocks.add(block);
@@ -149,21 +164,23 @@ class Indexer {
         } finally {
           this.processingBlocks.delete(block);
         }
-      }));
-    }
+      })
+    );
   }
 
   async storeBlock(data: any) {
     const { block, timestamp, state } = data;
 
     try {
-      await pool.query(`
+      await pool.query(
+        `
 INSERT INTO contract_states (
 block_number, timestamp, total_pool_stake_token, total_pool_liquid,
 exchange_rate, stake_token_balance, buy_in_percentage, buy_in_enabled
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 ON CONFLICT (block_number) DO NOTHING
-`, [
+`,
+        [
           block,
           timestamp,
           state.totalPoolStakeToken || '0',
@@ -172,9 +189,11 @@ ON CONFLICT (block_number) DO NOTHING
           state.stakeTokenBalance || '0',
           state.buyInPercentage || '0',
           state.buyInEnabled || false
-        ]);
+        ]
+      );
 
-      await pool.query(`
+      await pool.query(
+        `
 INSERT INTO current_state (
 id, block_number, timestamp, total_pool_stake_token, total_pool_liquid,
 exchange_rate, stake_token_balance, buy_in_percentage, buy_in_enabled
@@ -184,7 +203,8 @@ block_number = $1, timestamp = $2, total_pool_stake_token = $3,
 total_pool_liquid = $4, exchange_rate = $5, stake_token_balance = $6,
 buy_in_percentage = $7, buy_in_enabled = $8
 WHERE current_state.block_number < $1
-`, [
+`,
+        [
           block,
           timestamp,
           state.totalPoolStakeToken || '0',
@@ -193,7 +213,8 @@ WHERE current_state.block_number < $1
           state.stakeTokenBalance || '0',
           state.buyInPercentage || '0',
           state.buyInEnabled || false
-        ]);
+        ]
+      );
     } catch (err) {
       console.error(`Failed to store block ${block}:`, err);
       throw err;
@@ -202,10 +223,12 @@ WHERE current_state.block_number < $1
 
   async getCurrentBlock(): Promise<number | null> {
     try {
-      const resp = await axios.get(`${process.env.PARTISIA_API_URL}/chain/shards/Shard2/blocks`);
+      const resp = await axios.get(
+        `${process.env.PARTISIA_API_URL}/chain/shards/Shard2/blocks`
+      );
       return resp.data?.blockTime ?? null;
     } catch (err) {
-      console.error("Failed to get current block:", err);
+      console.error('Failed to get current block:', err);
       return null;
     }
   }
