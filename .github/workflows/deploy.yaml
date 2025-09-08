@@ -113,8 +113,23 @@ jobs:
             tar -xzf deploy.tar.gz
             rm deploy.tar.gz
             
-            docker compose -f docker-compose.${{ env.ENVIRONMENT }}.yaml down 2>/dev/null || true
-            docker compose -f docker-compose.${{ env.ENVIRONMENT }}.yaml build --no-cache
+            # Only run schema on first deploy
+            if ! docker volume ls | grep -q pgdata_${{ env.ENVIRONMENT }}; then
+              echo "First deploy - initializing database"
+              docker run --rm \
+                --network partisia_net_${{ env.ENVIRONMENT }} \
+                -e PGPASSWORD=letmein \
+                -v $(pwd)/src/db/schema.sql:/schema.sql \
+                postgres:16.5 \
+                psql -h postgres -U indexer -d ls_indexer -f /schema.sql
+            fi
+            
+            # Stop only indexer, keep postgres running
+            docker compose -f docker-compose.${{ env.ENVIRONMENT }}.yaml stop indexer 2>/dev/null || true
+            docker compose -f docker-compose.${{ env.ENVIRONMENT }}.yaml rm -f indexer 2>/dev/null || true
+            
+            # Rebuild and start indexer
+            docker compose -f docker-compose.${{ env.ENVIRONMENT }}.yaml build indexer
             docker compose -f docker-compose.${{ env.ENVIRONMENT }}.yaml up -d
             
             sleep 10
@@ -122,7 +137,7 @@ jobs:
             
             if ! curl -sf http://localhost:${{ env.PORTS_PREFIX }}942/health > /dev/null; then
               echo "Health check failed"
-              docker compose -f docker-compose.${{ env.ENVIRONMENT }}.yaml logs --tail=50
+              docker compose -f docker-compose.${{ env.ENVIRONMENT }}.yaml logs indexer --tail=50
               exit 1
             fi
             
