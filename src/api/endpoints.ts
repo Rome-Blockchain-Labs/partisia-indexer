@@ -418,3 +418,27 @@ process.on('SIGTERM', async () => {
   await pool.end();
   process.exit(0);
 });
+
+// Indexing status endpoint
+app.get('/status', async (req, res) => {
+  try {
+    const [current, latest] = await Promise.all([
+      pool.query('SELECT MAX(block_number) as current FROM contract_states'),
+      pool.query("SELECT CAST(EXTRACT(EPOCH FROM NOW()) * 10 AS BIGINT) as estimated_latest")
+    ]);
+    
+    const currentBlock = parseInt(current.rows[0]?.current) || config.blockchain.deploymentBlock;
+    const latestBlock = parseInt(latest.rows[0]?.estimated_latest) || currentBlock;
+    const progress = ((currentBlock - config.blockchain.deploymentBlock) / (latestBlock - config.blockchain.deploymentBlock)) * 100;
+    
+    res.json({
+      indexing: progress < 99.9,
+      progress: progress.toFixed(2) + '%',
+      currentBlock,
+      latestBlock,
+      blocksRemaining: latestBlock - currentBlock
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to get status' });
+  }
+});
