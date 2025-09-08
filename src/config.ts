@@ -2,7 +2,7 @@ export default {
   blockchain: {
     apiUrl: process.env.PARTISIA_API_URL || 'https://reader.partisiablockchain.com',
     contractAddress: process.env.LS_CONTRACT || '02fc82abf81cbb36acfe196faa1ad49ddfa7abdda6',
-    deploymentBlock: parseInt(process.env.DEPLOYMENT_BLOCK || '10547814'),
+    deploymentBlock: parseInt(process.env.DEPLOYMENT_BLOCK || '10682802'),
     deploymentTx: process.env.DEPLOYMENT_TX || 'd20bdb67fd5e52f21e2229a7fc82abf81cbb36acfe196faa1ad49ddfa7abdda6',
     deploymentTimestamp: new Date('2025-06-19T13:48:00Z'),
   },
