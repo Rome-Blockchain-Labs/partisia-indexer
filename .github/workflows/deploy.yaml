@@ -129,7 +129,7 @@ jobs:
             docker compose -f docker-compose.${{ env.ENVIRONMENT }}.yaml rm -f indexer 2>/dev/null || true
             
             # Rebuild and start indexer
-            docker compose -f docker-compose.${{ env.ENVIRONMENT }}.yaml build indexer
+            docker compose -f docker-compose.${{ env.ENVIRONMENT }}.yaml build --no-cache indexer
             docker compose -f docker-compose.${{ env.ENVIRONMENT }}.yaml up -d
             
             sleep 10
