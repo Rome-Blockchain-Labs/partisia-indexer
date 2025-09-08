@@ -107,21 +107,23 @@ jobs:
           set -e
           ssh-keyscan -H ${{ env.SERVER_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
           ssh partisia@${{ env.SERVER_HOST }} "mkdir -p ${{ env.DEPLOY_PATH }}/src/db"
+
           tar -czf deploy.tar.gz src package.json tsconfig.json Dockerfile bun.lock docker-compose.${{ env.ENVIRONMENT }}.yaml
           scp deploy.tar.gz partisia@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}/
-          ssh partisia@${{ env.SERVER_HOST }} << 'DEPLOY_EOF'
+
+          ssh partisia@${{ env.SERVER_HOST }} << EOF
             set -e
             cd ${{ env.DEPLOY_PATH }}
             tar -xzf deploy.tar.gz
             rm deploy.tar.gz
 
             # First run init
-            if ! docker volume ls | grep -q pgdata_${ENVIRONMENT}; then
+            if ! docker volume ls | grep -q pgdata_${{ env.ENVIRONMENT }}; then
               echo "📦 First deploy - initializing database schema"
               docker run --rm \
-                --network partisia_net_${ENVIRONMENT} \
+                --network partisia_net_${{ env.ENVIRONMENT }} \
                 -e PGPASSWORD=letmein \
-                -v $(pwd)/src/db/schema.sql:/schema.sql \
+                -v \$(pwd)/src/db/schema.sql:/schema.sql \
                 postgres:16.5 \
                 psql -h postgres -U indexer -d ls_indexer -f /schema.sql
             fi
@@ -129,8 +131,8 @@ jobs:
             # Reset protocol tables if requested
             if [[ "${RESET_DB}" == "true" ]]; then
               echo "⚠️ Resetting protocol tables for resync"
-              docker exec -i $(docker compose -f docker-compose.${ENVIRONMENT}.yaml ps -q postgres) \
-                psql -U indexer -d ls_indexer <<'SQL'
+              docker exec -i \$(docker compose -f docker-compose.${{ env.ENVIRONMENT }}.yaml ps -q postgres) \
+                psql -U indexer -d ls_indexer <<SQL
           TRUNCATE contract_states RESTART IDENTITY CASCADE;
           TRUNCATE current_state RESTART IDENTITY CASCADE;
           TRUNCATE transactions RESTART IDENTITY CASCADE;
@@ -140,24 +142,24 @@ jobs:
             fi
 
             # Stop only indexer, keep postgres running
-            docker compose -f docker-compose.${ENVIRONMENT}.yaml stop indexer 2>/dev/null || true
-            docker compose -f docker-compose.${ENVIRONMENT}.yaml rm -f indexer 2>/dev/null || true
+            docker compose -f docker-compose.${{ env.ENVIRONMENT }}.yaml stop indexer 2>/dev/null || true
+            docker compose -f docker-compose.${{ env.ENVIRONMENT }}.yaml rm -f indexer 2>/dev/null || true
 
             # Rebuild and start indexer
-            docker compose -f docker-compose.${ENVIRONMENT}.yaml build --no-cache indexer
-            docker compose -f docker-compose.${ENVIRONMENT}.yaml up -d
+            docker compose -f docker-compose.${{ env.ENVIRONMENT }}.yaml build --no-cache indexer
+            docker compose -f docker-compose.${{ env.ENVIRONMENT }}.yaml up -d
 
             sleep 10
-            docker compose -f docker-compose.${ENVIRONMENT}.yaml ps
+            docker compose -f docker-compose.${{ env.ENVIRONMENT }}.yaml ps
 
-            if ! curl -sf http://localhost:${PORTS_PREFIX}942/health > /dev/null; then
+            if ! curl -sf http://localhost:${{ env.PORTS_PREFIX }}942/health > /dev/null; then
               echo "Health check failed"
-              docker compose -f docker-compose.${ENVIRONMENT}.yaml logs indexer --tail=50
+              docker compose -f docker-compose.${{ env.ENVIRONMENT }}.yaml logs indexer --tail=50
               exit 1
             fi
 
             echo "✅ Deployment successful"
-          DEPLOY_EOF
+          EOF
 
       - name: Verify deployment
         run: |
