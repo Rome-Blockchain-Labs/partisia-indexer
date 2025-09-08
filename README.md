@@ -47,7 +47,7 @@ COINGECKO_API_KEY=your_key
 
 ## Performance
 
-- 10,000 blocks/batch (10 parallel × 1000 blocks)
+- 1,000 blocks/batch (10 parallel × 100 blocks) in public api before rate limiter slows
 - ~75 blocks/second indexing speed
 - Historical price backfill from deployment
 
