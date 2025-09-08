@@ -131,11 +131,11 @@ jobs:
               echo "⚠️ Resetting protocol tables for resync"
               docker exec -i $(docker compose -f docker-compose.${ENVIRONMENT}.yaml ps -q postgres) \
                 psql -U indexer -d ls_indexer <<'SQL'
-              TRUNCATE contract_states RESTART IDENTITY CASCADE;
-              TRUNCATE current_state RESTART IDENTITY CASCADE;
-              TRUNCATE transactions RESTART IDENTITY CASCADE;
-              TRUNCATE protocol_rewards RESTART IDENTITY CASCADE;
-              TRUNCATE users RESTART IDENTITY CASCADE;
+          TRUNCATE contract_states RESTART IDENTITY CASCADE;
+          TRUNCATE current_state RESTART IDENTITY CASCADE;
+          TRUNCATE transactions RESTART IDENTITY CASCADE;
+          TRUNCATE protocol_rewards RESTART IDENTITY CASCADE;
+          TRUNCATE users RESTART IDENTITY CASCADE;
           SQL
             fi
 
