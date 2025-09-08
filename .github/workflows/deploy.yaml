@@ -1,0 +1,191 @@
+name: Deploy Partisia Indexer
+
+on:
+ workflow_dispatch:
+   inputs:
+     environment:
+       description: 'Environment'
+       required: true
+       type: choice
+       options:
+         - production
+         - development
+     server:
+       description: 'Server'
+       required: true
+       type: choice
+       options:
+         - helhetz01
+         - helhetz02
+     deploy_user:
+       description: 'Deploy user'
+       required: true
+       type: choice
+       options:
+         - partisia
+         - deploy
+         - sceptre
+
+jobs:
+ deploy:
+   runs-on: ubuntu-latest
+   steps:
+     - uses: actions/checkout@v4
+
+     - name: Set environment
+       run: |
+         echo "ENVIRONMENT=${{ github.event.inputs.environment }}" >> $GITHUB_ENV
+         echo "DEPLOY_USER=${{ github.event.inputs.deploy_user }}" >> $GITHUB_ENV
+         
+         # Server mapping
+         if [[ "${{ github.event.inputs.server }}" == "helhetz01" ]]; then
+           echo "SERVER_HOST=helhetz01.romenet.io" >> $GITHUB_ENV
+           echo "PORTS_PREFIX=${{ github.event.inputs.environment == 'production' && '17' || '27' }}" >> $GITHUB_ENV
+         else
+           echo "SERVER_HOST=helhetz02.romenet.io" >> $GITHUB_ENV
+           echo "PORTS_PREFIX=${{ github.event.inputs.environment == 'production' && '18' || '28' }}" >> $GITHUB_ENV
+         fi
+         
+         echo "PROJECT_NAME=partisia-indexer-${{ github.event.inputs.environment }}" >> $GITHUB_ENV
+         echo "DEPLOY_PATH=/home/${{ github.event.inputs.deploy_user }}/partisia-indexer-${{ github.event.inputs.environment }}" >> $GITHUB_ENV
+
+     - uses: webfactory/ssh-agent@v0.8.0
+       with:
+         ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+     - name: Create docker-compose
+       run: |
+         cat > docker-compose.${{ env.ENVIRONMENT }}.yaml << 'COMPOSE_EOF'
+         name: ${{ env.PROJECT_NAME }}
+         services:
+           postgres:
+             image: postgres:16.5
+             restart: always
+             environment:
+               POSTGRES_PASSWORD: letmein
+               POSTGRES_USER: indexer
+               POSTGRES_DB: ls_indexer
+             volumes:
+               - pgdata_${{ env.ENVIRONMENT }}:/var/lib/postgresql/data
+               - ./src/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+             ports:
+               - '${{ env.PORTS_PREFIX }}432:5432'
+             networks:
+               - partisia_net
+
+           indexer:
+             build: .
+             restart: always
+             depends_on:
+               - postgres
+             environment:
+               - PARTISIA_API_URL=https://reader.partisiablockchain.com
+               - LS_CONTRACT=02fc82abf81cbb36acfe196faa1ad49ddfa7abdda6
+               - DEPLOYMENT_BLOCK=10547814
+               - DB_HOST=postgres
+               - DB_PORT=5432
+               - DB_NAME=ls_indexer
+               - DB_USER=indexer
+               - DB_PASSWORD=letmein
+               - INDEXER_BATCH_SIZE=1000
+               - INDEXER_CONCURRENCY=10
+               - INDEX_INTERVAL_S=10
+               - API_PORT=3002
+               - COINGECKO_API_KEY=${{ secrets.COINGECKO_API_KEY }}
+             ports:
+               - '${{ env.PORTS_PREFIX }}002:3002'
+             networks:
+               - partisia_net
+
+         networks:
+           partisia_net:
+             name: partisia_net_${{ env.ENVIRONMENT }}
+
+         volumes:
+           pgdata_${{ env.ENVIRONMENT }}:
+         COMPOSE_EOF
+
+     - name: Create schema
+       run: |
+         cat > src/db/schema.sql << 'SQL_EOF'
+         CREATE TABLE IF NOT EXISTS contract_states (
+           block_number BIGINT PRIMARY KEY,
+           timestamp TIMESTAMP NOT NULL,
+           total_pool_stake_token TEXT NOT NULL,
+           total_pool_liquid TEXT NOT NULL,
+           exchange_rate DECIMAL(20,10) NOT NULL,
+           stake_token_balance TEXT NOT NULL,
+           buy_in_percentage TEXT,
+           buy_in_enabled BOOLEAN DEFAULT false
+         );
+
+         CREATE TABLE IF NOT EXISTS current_state (
+           id INTEGER PRIMARY KEY DEFAULT 1,
+           block_number BIGINT NOT NULL,
+           timestamp TIMESTAMP NOT NULL,
+           total_pool_stake_token TEXT NOT NULL,
+           total_pool_liquid TEXT NOT NULL,
+           exchange_rate DECIMAL(20,10) NOT NULL,
+           stake_token_balance TEXT NOT NULL,
+           buy_in_percentage TEXT,
+           buy_in_enabled BOOLEAN DEFAULT false
+         );
+
+         CREATE TABLE IF NOT EXISTS price_history (
+           timestamp TIMESTAMP PRIMARY KEY,
+           price_usd DECIMAL(20,10) NOT NULL,
+           market_cap_usd DECIMAL(30,2),
+           volume_24h_usd DECIMAL(30,2)
+         );
+
+         CREATE TABLE IF NOT EXISTS users (
+           address TEXT PRIMARY KEY,
+           balance TEXT NOT NULL,
+           first_seen TIMESTAMP NOT NULL,
+           last_seen TIMESTAMP NOT NULL
+         );
+
+         CREATE TABLE IF NOT EXISTS transactions (
+           tx_hash TEXT PRIMARY KEY,
+           block_number BIGINT NOT NULL,
+           timestamp TIMESTAMP NOT NULL,
+           action TEXT NOT NULL,
+           sender TEXT,
+           amount TEXT,
+           metadata JSONB
+         );
+
+         CREATE INDEX idx_states_timestamp ON contract_states(timestamp DESC);
+         CREATE INDEX idx_states_rate ON contract_states(exchange_rate DESC);
+         CREATE INDEX idx_price_timestamp ON price_history(timestamp DESC);
+         SQL_EOF
+
+     - name: Deploy
+       run: |
+         ssh-keyscan ${{ env.SERVER_HOST }} >> ~/.ssh/known_hosts
+         ssh ${{ env.DEPLOY_USER }}@${{ env.SERVER_HOST }} "mkdir -p ${{ env.DEPLOY_PATH }}/scripts"
+         
+         # Copy files
+         scp -r src package.json tsconfig.json Dockerfile bun.lockb ${{ env.DEPLOY_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}/
+         scp docker-compose.${{ env.ENVIRONMENT }}.yaml ${{ env.DEPLOY_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}/
+         scp src/db/schema.sql ${{ env.DEPLOY_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}/scripts/
+         
+         # Deploy
+         ssh ${{ env.DEPLOY_USER }}@${{ env.SERVER_HOST }} << 'SSH_EOF'
+           cd ${{ env.DEPLOY_PATH }}
+           docker compose -f docker-compose.${{ env.ENVIRONMENT }}.yaml down || true
+           docker compose -f docker-compose.${{ env.ENVIRONMENT }}.yaml build
+           docker compose -f docker-compose.${{ env.ENVIRONMENT }}.yaml up -d
+           sleep 5
+           docker compose -f docker-compose.${{ env.ENVIRONMENT }}.yaml ps
+           echo "Deployment complete"
+         SSH_EOF
+
+     - name: Summary
+       run: |
+         echo "### Deployment Summary" >> $GITHUB_STEP_SUMMARY
+         echo "- **Server**: ${{ env.SERVER_HOST }}" >> $GITHUB_STEP_SUMMARY
+         echo "- **Environment**: ${{ env.ENVIRONMENT }}" >> $GITHUB_STEP_SUMMARY
+         echo "- **API**: http://${{ env.SERVER_HOST }}:${{ env.PORTS_PREFIX }}002" >> $GITHUB_STEP_SUMMARY
+         echo "- **GraphQL**: http://${{ env.SERVER_HOST }}:${{ env.PORTS_PREFIX }}002/graphql" >> $GITHUB_STEP_SUMMARY
+         echo "- **PostgreSQL**: ${{ env.SERVER_HOST }}:${{ env.PORTS_PREFIX }}432" >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,80 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build x86 binary
+        run: |
+          bun build src/index.ts --compile --target=bun-linux-x64 --outfile=partisia-indexer-x86_64
+          chmod +x partisia-indexer-x86_64
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: partisia-indexer-x86_64
+          generate_release_notes: true
+          body: |
+            ## Partisia Indexer ${{ github.ref_name }}
+            
+            ### Download
+            ```bash
+            wget https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/partisia-indexer-x86_64
+            chmod +x partisia-indexer-x86_64
+            ```
+            
+            ### Requirements
+            - PostgreSQL 14+
+            - Linux x86_64
+            - 1GB RAM minimum
+            - Port 3002 (API)
+            
+            ### Environment Variables
+            ```bash
+            # Required
+            export DB_HOST=localhost
+            export DB_PORT=5432
+            export DB_NAME=ls_indexer
+            export DB_USER=indexer
+            export DB_PASSWORD=changeme
+            
+            # Optional (defaults shown)
+            export PARTISIA_API_URL=https://reader.partisiablockchain.com
+            export LS_CONTRACT=02fc82abf81cbb36acfe196faa1ad49ddfa7abdda6
+            export DEPLOYMENT_BLOCK=10547814
+            export API_PORT=3002
+            export INDEXER_BATCH_SIZE=1000
+            export INDEXER_CONCURRENCY=10
+            export INDEX_INTERVAL_S=10
+            export COINGECKO_API_KEY=your_key_here
+            ```
+            
+            ### Database Setup
+            ```sql
+            CREATE DATABASE ls_indexer;
+            CREATE USER indexer WITH PASSWORD 'changeme';
+            GRANT ALL PRIVILEGES ON DATABASE ls_indexer TO indexer;
+            ```
+            
+            ### Run
+            ```bash
+            ./partisia-indexer-x86_64
+            ```
+            
+            ### API Endpoints
+            - REST: http://localhost:3002/api
+            - GraphQL: http://localhost:3002/graphql
+            - Health: http://localhost:3002/health
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
