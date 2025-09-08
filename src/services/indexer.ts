@@ -70,17 +70,12 @@ class Indexer {
   }
 
   async indexLoop() {
-    const batchSize = parseInt(process.env.INDEXER_BATCH_SIZE || '1000');
-    const concurrency = parseInt(process.env.INDEXER_CONCURRENCY || '10');
+  const batchSize = parseInt(process.env.INDEXER_BATCH_SIZE || '1000');
+  const concurrency = parseInt(process.env.INDEXER_CONCURRENCY || '10');
     const totalPerBatch = batchSize * concurrency;
 
     while (this.running) {
       const tipBlock = await this.getCurrentBlock();
-
-      if (!tipBlock) {
-        await new Promise(r => setTimeout(r, 5000));
-        continue;
-      }
 
       if (!tipBlock || tipBlock === 0) {
         console.error('Invalid tip block:', tipBlock);
@@ -88,8 +83,20 @@ class Indexer {
         continue;
       }
 
+      // if caught up, wait for new blocks
+      if (this.currentBlock >= tipBlock) {
+        await new Promise(r => setTimeout(r, 10000));
+        continue;
+      }
+
       const remaining = tipBlock - this.currentBlock;
       const blocksToFetch = Math.min(totalPerBatch, remaining);
+
+      // skip if nothing to fetch
+      if (blocksToFetch <= 0) {
+        await new Promise(r => setTimeout(r, 10000));
+        continue;
+      }
 
       const promises: Promise<BlockState | null>[] = [];
       for (let i = 0; i < blocksToFetch; i++) {
