@@ -106,12 +106,9 @@ jobs:
         run: |
           set -e
           ssh-keyscan -H ${{ env.SERVER_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
-
           ssh partisia@${{ env.SERVER_HOST }} "mkdir -p ${{ env.DEPLOY_PATH }}/src/db"
-
           tar -czf deploy.tar.gz src package.json tsconfig.json Dockerfile bun.lock docker-compose.${{ env.ENVIRONMENT }}.yaml
           scp deploy.tar.gz partisia@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}/
-
           ssh partisia@${{ env.SERVER_HOST }} << 'DEPLOY_EOF'
             set -e
             cd ${{ env.DEPLOY_PATH }}
@@ -132,13 +129,14 @@ jobs:
             # Reset protocol tables if requested
             if [[ "${RESET_DB}" == "true" ]]; then
               echo "⚠️ Resetting protocol tables for resync"
-              docker exec -i $(docker compose -f docker-compose.${ENVIRONMENT}.yaml ps -q postgres) psql -U indexer -d ls_indexer <<SQL
-                TRUNCATE contract_states RESTART IDENTITY CASCADE;
-                TRUNCATE current_state RESTART IDENTITY CASCADE;
-                TRUNCATE transactions RESTART IDENTITY CASCADE;
-                TRUNCATE protocol_rewards RESTART IDENTITY CASCADE;
-                TRUNCATE users RESTART IDENTITY CASCADE;
-              SQL
+              docker exec -i $(docker compose -f docker-compose.${ENVIRONMENT}.yaml ps -q postgres) \
+                psql -U indexer -d ls_indexer <<'SQL'
+              TRUNCATE contract_states RESTART IDENTITY CASCADE;
+              TRUNCATE current_state RESTART IDENTITY CASCADE;
+              TRUNCATE transactions RESTART IDENTITY CASCADE;
+              TRUNCATE protocol_rewards RESTART IDENTITY CASCADE;
+              TRUNCATE users RESTART IDENTITY CASCADE;
+          SQL
             fi
 
             # Stop only indexer, keep postgres running
