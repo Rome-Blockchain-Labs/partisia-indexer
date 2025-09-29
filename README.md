@@ -8,7 +8,7 @@ Indexes Partisia Liquid Staking protocol state and MPC token prices.
 git clone https://github.com/rome-labs/partisia-liquid-staking-indexer
 cd partisia-liquid-staking-indexer
 cp .env.example .env
-docker-compose up -d
+docker compose up -d
 ```
 
 ## API
