@@ -38,7 +38,7 @@ class Indexer {
           if (gap > 1) {
             const batchSize = Math.min(
               gap - 1,
-              parseInt(process.env.INDEXER_BATCH_SIZE || '100')
+              parseInt(process.env.INDEXER_BATCH_SIZE || '1000')
             );
             const blocks = Array.from(
               { length: batchSize },
