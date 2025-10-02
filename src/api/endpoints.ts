@@ -169,24 +169,23 @@ ORDER BY timestamp ASC
     const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
     const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
 
-    // Find closest points to target times
-    const findClosest = (targetTime) => {
-      let closest = points[0];
-      let minDiff = Math.abs(new Date(points[0].timestamp).getTime() - targetTime.getTime());
-
-      for (const point of points) {
-        const diff = Math.abs(new Date(point.timestamp).getTime() - targetTime.getTime());
-        if (diff < minDiff && new Date(point.timestamp) < now) {
-          minDiff = diff;
-          closest = point;
+    // Find the latest point at or before the target time
+    const findAtOrBefore = (targetTime) => {
+      let candidate = points[0];
+      for (const p of points) {
+        const t = new Date(p.timestamp);
+        if (t <= targetTime) {
+          candidate = p;
+        } else {
+          break; // rows are ASC, so we can stop once we pass the target
         }
       }
-      return closest;
+      return candidate;
     };
 
-    const dayPoint = findClosest(oneDayAgo);
-    const weekPoint = findClosest(sevenDaysAgo);
-    const monthPoint = findClosest(thirtyDaysAgo);
+    const dayPoint = findAtOrBefore(oneDayAgo);
+    const weekPoint = findAtOrBefore(sevenDaysAgo);
+    const monthPoint = findAtOrBefore(thirtyDaysAgo);
 
     // Calculate APYs
     const calculateAPY = (oldPoint, newPoint) => {
@@ -334,11 +333,7 @@ app.get('/health', async (req, res) => {
 // Indexing status endpoint
 app.get('/status', async (req, res) => {
   try {
-    const [current, tip] = await Promise.all([
-      pool.query('SELECT MAX(block_number) as current FROM contract_states'),
-      pool.query('SELECT MAX(block_number) as tip FROM contract_states')
-    ]);
-
+    const current = await pool.query('SELECT MAX(block_number) as current FROM contract_states');
     const currentBlock = parseInt(current.rows[0]?.current) || config.blockchain.deploymentBlock;
     const tipBlock = currentBlock + 1000; // Estimate ahead
     const progress = Math.min(100, ((currentBlock - config.blockchain.deploymentBlock) / (tipBlock - config.blockchain.deploymentBlock)) * 100);

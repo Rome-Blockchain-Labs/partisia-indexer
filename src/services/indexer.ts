@@ -53,7 +53,7 @@ class Indexer {
         }
 
         await new Promise((r) =>
-          setTimeout(r, parseInt(process.env.INDEX_INTERVAL_S || '10') * 100)
+          setTimeout(r, parseInt(process.env.INDEX_INTERVAL_S || '10') * 1000)
         );
       } catch (error) {
         console.error('Indexer loop error:', error);
@@ -146,30 +146,41 @@ class Indexer {
   }
 
   async processBlocks(blocks: number[]) {
-    // Launch entire batch concurrently
-    await Promise.all(
-      blocks.map(async (block) => {
-        if (this.processingBlocks.has(block)) return;
+    const concurrency = parseInt(process.env.INDEXER_CONCURRENCY || '10');
 
-        this.processingBlocks.add(block);
+    // Process blocks in limited batches
+    for (let i = 0; i < blocks.length; i += concurrency) {
+      const batch = blocks.slice(i, i + concurrency);
 
-        try {
-          const data = await this.fetchBlockWithRetry(block, 3);
-          if (data && data.state) {
-            await this.storeBlock(data);
-          } else {
-            this.failedBlocks.set(block, 0);
-            console.warn(`Block ${block} added to retry queue`);
+      await Promise.all(
+        batch.map(async (block) => {
+          if (this.processingBlocks.has(block)) return;
+
+          this.processingBlocks.add(block);
+
+          try {
+            const data = await this.fetchBlockWithRetry(block, 3);
+            if (data && data.state) {
+              await this.storeBlock(data);
+            } else {
+              this.failedBlocks.set(block, 0);
+              console.warn(`Block ${block} added to retry queue`);
+            }
+          } finally {
+            this.processingBlocks.delete(block);
           }
-        } finally {
-          this.processingBlocks.delete(block);
-        }
-      })
-    );
+        })
+      );
+    }
   }
 
   async storeBlock(data: any) {
     const { block, timestamp, state } = data;
+
+    // Calculate exchange rate from totals
+    const totalStake = BigInt(state.totalPoolStakeToken || '0');
+    const totalLiquid = BigInt(state.totalPoolLiquid || '0');
+    const exchangeRate = totalLiquid === 0n ? 1.0 : Number(totalStake) / Number(totalLiquid);
 
     try {
       await pool.query(
@@ -185,7 +196,7 @@ ON CONFLICT (block_number) DO NOTHING
           timestamp,
           state.totalPoolStakeToken || '0',
           state.totalPoolLiquid || '0',
-          state.exchangeRate || 1.0,
+          exchangeRate,
           state.stakeTokenBalance || '0',
           state.buyInPercentage || '0',
           state.buyInEnabled || false
@@ -209,7 +220,7 @@ WHERE current_state.block_number < $1
           timestamp,
           state.totalPoolStakeToken || '0',
           state.totalPoolLiquid || '0',
-          state.exchangeRate || 1.0,
+          exchangeRate,
           state.stakeTokenBalance || '0',
           state.buyInPercentage || '0',
           state.buyInEnabled || false

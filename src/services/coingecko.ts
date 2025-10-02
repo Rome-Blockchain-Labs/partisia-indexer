@@ -43,9 +43,10 @@ class CoinGecko {
       const dateStr = `${currentDate.getUTCDate().toString().padStart(2,'0')}-${(currentDate.getUTCMonth()+1).toString().padStart(2,'0')}-${currentDate.getUTCFullYear()}`;
       
       try {
+        const headers = this.apiKey ? { 'x-cg-pro-api-key': this.apiKey } : {};
         const resp = await axios.get(
           `https://api.coingecko.com/api/v3/coins/partisia-blockchain/history?date=${dateStr}`,
-          { headers: { 'x-cg-demo-api-key': this.apiKey } }
+          { headers }
         );
         
         const price = resp.data.market_data?.current_price?.usd || 0;
@@ -75,9 +76,10 @@ class CoinGecko {
   async monitorCurrentPrice() {
     while (this.running) {
       try {
+        const headers = this.apiKey ? { 'x-cg-pro-api-key': this.apiKey } : {};
         const resp = await axios.get(
           `https://api.coingecko.com/api/v3/simple/price?ids=partisia-blockchain&vs_currencies=usd&include_market_cap=true&include_24hr_vol=true`,
-          { headers: { 'x-cg-demo-api-key': this.apiKey } }
+          { headers }
         );
         
         const data = resp.data['partisia-blockchain'];
