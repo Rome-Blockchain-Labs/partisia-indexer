@@ -24,7 +24,6 @@ const pool = new Pool({
   connectionTimeoutMillis: 2000,
 });
 
-// Get exchange rates
 app.get('/exchangeRates', async (req, res) => {
   try {
     const hours = parseInt(req.query.hours as string) || 24;
@@ -47,7 +46,6 @@ LIMIT 1000
   }
 });
 
-// Get rewards based on rate changes
 app.get('/accrueRewards', async (req, res) => {
   try {
     const result = await pool.query(`
@@ -83,7 +81,6 @@ ORDER BY block_number DESC
   }
 });
 
-// Daily aggregated data
 app.get('/daily', async (req, res) => {
   try {
     const days = parseInt(req.query.days as string) || 30;
@@ -108,7 +105,6 @@ ORDER BY date DESC
   }
 });
 
-// Current protocol state
 app.get('/stats', async (req, res) => {
   try {
     const [current, deployment, userCount] = await Promise.all([
@@ -141,10 +137,8 @@ app.get('/stats', async (req, res) => {
   }
 });
 
-// APY calculation with intelligent data point selection
 app.get('/apy', async (req, res) => {
   try {
-    // Get all data points with timestamps
     const allData = await pool.query(`
 SELECT exchange_rate, timestamp 
 FROM contract_states 
@@ -164,12 +158,11 @@ ORDER BY timestamp ASC
     const points = allData.rows;
     const latest = points[points.length - 1];
 
-    // Find best data points for each period
+    // find closest historical points for precise apy calc
     const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
     const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
     const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
 
-    // Find the latest point at or before the target time
     const findAtOrBefore = (targetTime) => {
       let candidate = points[0];
       for (const p of points) {
@@ -177,7 +170,7 @@ ORDER BY timestamp ASC
         if (t <= targetTime) {
           candidate = p;
         } else {
-          break; // rows are ASC, so we can stop once we pass the target
+          break;
         }
       }
       return candidate;
@@ -187,7 +180,6 @@ ORDER BY timestamp ASC
     const weekPoint = findAtOrBefore(sevenDaysAgo);
     const monthPoint = findAtOrBefore(thirtyDaysAgo);
 
-    // Calculate APYs
     const calculateAPY = (oldPoint, newPoint) => {
       const timeDiff = (new Date(newPoint.timestamp).getTime() - new Date(oldPoint.timestamp).getTime()) / (1000 * 60 * 60 * 24);
       if (timeDiff <= 0) return null;
@@ -200,7 +192,7 @@ ORDER BY timestamp ASC
     const apy7d = weekPoint !== latest ? calculateAPY(weekPoint, latest) : null;
     const apy30d = monthPoint !== latest ? calculateAPY(monthPoint, latest) : null;
 
-    // If we don't have enough historical data, extrapolate from what we have
+    // fallback to oldest available data
     const oldestPoint = points[0];
     const fallbackAPY = calculateAPY(oldestPoint, latest);
 
@@ -218,7 +210,6 @@ ORDER BY timestamp ASC
   }
 });
 
-// MPC price endpoints
 app.get('/mpc/prices', async (req, res) => {
   try {
     const hours = parseInt(req.query.hours as string) || 24;
@@ -240,7 +231,6 @@ LIMIT 1000
   }
 });
 
-// Current MPC price
 app.get('/mpc/current', async (req, res) => {
   try {
     const result = await pool.query(`
@@ -261,7 +251,6 @@ LIMIT 1
   }
 });
 
-// Combined stats with USD values
 app.get('/stats/combined', async (req, res) => {
   try {
     const [current, mpcPrice] = await Promise.all([
@@ -270,8 +259,16 @@ app.get('/stats/combined', async (req, res) => {
     ]);
 
     const currentPrice = parseFloat(mpcPrice.rows[0]?.price_usd) || 0;
-    const totalStaked = BigInt(current.rows[0]?.total_pool_stake_token || '0');
-    const totalLiquid = BigInt(current.rows[0]?.total_pool_liquid || '0');
+
+    // db stores as quoted hex, convert to decimal
+    const parseHexToBigInt = (hexStr) => {
+      if (!hexStr || hexStr === '0') return BigInt(0);
+      const cleanHex = hexStr.replace(/"/g, '');
+      return BigInt('0x' + cleanHex);
+    };
+
+    const totalStaked = parseHexToBigInt(current.rows[0]?.total_pool_stake_token);
+    const totalLiquid = parseHexToBigInt(current.rows[0]?.total_pool_liquid);
 
     res.json({
       price: {
@@ -295,7 +292,6 @@ app.get('/stats/combined', async (req, res) => {
   }
 });
 
-// User list
 app.get('/users', async (req, res) => {
   try {
     const result = await pool.query(`
@@ -311,7 +307,6 @@ LIMIT 100
   }
 });
 
-// GraphQL
 const yoga = createYoga({ 
   schema,
   graphiql: true,
@@ -320,7 +315,6 @@ const yoga = createYoga({
 
 app.use('/graphql', yoga)
 
-// Health check
 app.get('/health', async (req, res) => {
   try {
     const result = await pool.query('SELECT NOW()');
@@ -330,12 +324,11 @@ app.get('/health', async (req, res) => {
   }
 });
 
-// Indexing status endpoint
 app.get('/status', async (req, res) => {
   try {
     const current = await pool.query('SELECT MAX(block_number) as current FROM contract_states');
     const currentBlock = parseInt(current.rows[0]?.current) || config.blockchain.deploymentBlock;
-    const tipBlock = currentBlock + 1000; // Estimate ahead
+    const tipBlock = currentBlock + 1000;
     const progress = Math.min(100, ((currentBlock - config.blockchain.deploymentBlock) / (tipBlock - config.blockchain.deploymentBlock)) * 100);
 
     res.json({
@@ -350,7 +343,6 @@ app.get('/status', async (req, res) => {
   }
 });
 
-// API documentation
 app.get('/api', (req, res) => {
   res.json({
     version: '1.0.0',

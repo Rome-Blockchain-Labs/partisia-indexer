@@ -1,63 +1,54 @@
-# partisia-liquid-staking-indexer
+# partisia liquid staking indexer
 
-Indexes Partisia Liquid Staking protocol state and MPC token prices.
+indexes partisia liquid staking protocol state and mpc token prices.
 
-## Setup
+## documentation
+
+- [development guide](DEVELOPMENT.md) - deployment, setup, configuration
+- [api documentation](API_DOCS.md) - rest endpoints and graphql schemas
+
+## setup
 
 ```bash
-git clone https://github.com/rome-labs/partisia-liquid-staking-indexer
-cd partisia-liquid-staking-indexer
+git clone repo
 cp .env.example .env
 docker compose up -d
 ```
 
-## API
+## api
 
-### REST
-- `GET /stats` - Protocol state
-- `GET /exchangeRates?hours=24` - Historical rates  
-- `GET /mpc/current` - MPC price
-- `GET /apy` - APY calculation
-- `GET /users` - User balances
+rest: `http://localhost:3002`
+graphql: `http://localhost:3002/graphql`
 
-### GraphQL
-```graphql
-POST /graphql
-{
-  currentState { exchangeRate tvlUsd }
-  exchangeRate { mpcPrice smpcPrice }
-  priceHistory(hours: 24) { priceUsd }
-}
-```
+key endpoints:
+- `/stats` - protocol state
+- `/apy` - yield calculations
+- `/mpc/current` - mpc price
+- `/exchangeRates` - historical rates
+- `/users` - user balances
 
-## Configuration
+## development
 
-```env
-PARTISIA_API_URL=https://reader.partisiablockchain.com
-LS_CONTRACT=02fc82abf81cbb36acfe196faa1ad49ddfa7abdda6
-DEPLOYMENT_BLOCK=10682802
+processes ~75 blocks/second with 1000 block batches.
 
-# Performance
-INDEXER_BATCH_SIZE=1000
-INDEXER_CONCURRENCY=10
+### github workflows
 
-# CoinGecko
-COINGECKO_API_KEY=your_key
-```
+automated ci/cd with three workflows:
 
-## Performance
+- **test.yaml** - runs tests and api validation on push/pr to main/develop
+- **deploy.yaml** - manual deployment to production/development environments on helhetz01/helhetz02 servers
+- **release.yaml** - builds x86_64 binary releases on version tags
 
-- 1,000 blocks/batch (10 parallel × 100 blocks) in public api before rate limiter slows
-- ~75 blocks/second indexing speed
-- Historical price backfill from deployment
+deployment supports:
+- production/development environment selection
+- dual server deployment (helhetz01/helhetz02)
+- database reset option for chain resyncing
+- health checks and rollback capability
 
-## Stack
+## stack
 
-- Bun runtime
-- PostgreSQL 
-- GraphQL Yoga
-- CoinGecko API
+bun + postgres + graphql yoga + coingecko api
 
-## License
+## license
 
-MIT
+mit

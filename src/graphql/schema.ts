@@ -168,13 +168,22 @@ export const schema = createSchema({
         
         const s = state.rows[0]
         const p = parseFloat(price.rows[0]?.price_usd) || 0
-        const staked = BigInt(s?.total_pool_stake_token || '0')
-        
+
+        // db stores as quoted hex, convert to decimal
+        const parseHexToBigInt = (hexStr) => {
+          if (!hexStr || hexStr === '0') return BigInt(0);
+          const cleanHex = hexStr.replace(/"/g, '');
+          return BigInt('0x' + cleanHex);
+        };
+
+        const staked = parseHexToBigInt(s?.total_pool_stake_token)
+        const liquid = parseHexToBigInt(s?.total_pool_liquid)
+
         return {
           blockNumber: s?.block_number || '0',
           exchangeRate: s?.exchange_rate || '1.0',
-          totalStaked: s?.total_pool_stake_token || '0',
-          totalLiquid: s?.total_pool_liquid || '0',
+          totalStaked: staked.toString(),
+          totalLiquid: liquid.toString(),
           tvlUsd: (Number(staked) / 1e6 * p).toFixed(2)
         }
       },
