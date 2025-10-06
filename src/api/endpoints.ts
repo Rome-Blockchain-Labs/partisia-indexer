@@ -259,16 +259,8 @@ app.get('/stats/combined', async (req, res) => {
     ]);
 
     const currentPrice = parseFloat(mpcPrice.rows[0]?.price_usd) || 0;
-
-    // db stores as quoted hex, convert to decimal
-    const parseHexToBigInt = (hexStr) => {
-      if (!hexStr || hexStr === '0') return BigInt(0);
-      const cleanHex = hexStr.replace(/"/g, '');
-      return BigInt('0x' + cleanHex);
-    };
-
-    const totalStaked = parseHexToBigInt(current.rows[0]?.total_pool_stake_token);
-    const totalLiquid = parseHexToBigInt(current.rows[0]?.total_pool_liquid);
+    const totalStaked = BigInt(current.rows[0]?.total_pool_stake_token || '0');
+    const totalLiquid = BigInt(current.rows[0]?.total_pool_liquid || '0');
 
     res.json({
       price: {
@@ -326,17 +318,33 @@ app.get('/health', async (req, res) => {
 
 app.get('/status', async (req, res) => {
   try {
-    const current = await pool.query('SELECT MAX(block_number) as current FROM contract_states');
-    const currentBlock = parseInt(current.rows[0]?.current) || config.blockchain.deploymentBlock;
-    const tipBlock = currentBlock + 1000;
-    const progress = Math.min(100, ((currentBlock - config.blockchain.deploymentBlock) / (tipBlock - config.blockchain.deploymentBlock)) * 100);
+    const indexer = require('../services/indexer').default;
+    const stats = await indexer.getIndexingStats();
+
+    const deploymentBlock = config.blockchain.deploymentBlock;
+    const currentBlock = await indexer.getCurrentBlock();
+    const coverage = stats.total_blocks && currentBlock ?
+      ((stats.total_blocks / (currentBlock - deploymentBlock)) * 100).toFixed(2) : '0';
 
     res.json({
-      indexing: progress < 99.9,
-      progress: progress.toFixed(2) + '%',
-      currentBlock,
-      latestBlock: tipBlock,
-      blocksRemaining: Math.max(0, tipBlock - currentBlock)
+      mode: 'dual-mode',
+      head: {
+        current_block: currentBlock,
+        latest_indexed: stats.latest_block,
+        is_synced: currentBlock - stats.latest_block <= 1
+      },
+      backfill: {
+        earliest_block: stats.earliest_block,
+        deployment_block: deploymentBlock,
+        total_indexed: stats.total_blocks,
+        coverage: coverage + '%',
+        gaps: stats.gaps_detected || 0,
+        missing_blocks: stats.total_gap_blocks || 0
+      },
+      performance: {
+        days_indexed: stats.days_indexed,
+        blocks_per_day: Math.round(stats.total_blocks / Math.max(1, stats.days_indexed))
+      }
     });
   } catch (error) {
     res.status(500).json({ error: 'Failed to get status' });

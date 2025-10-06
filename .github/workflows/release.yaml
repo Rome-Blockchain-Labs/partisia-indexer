@@ -52,7 +52,7 @@ jobs:
             # Optional (defaults shown)
             export PARTISIA_API_URL=https://reader.partisiablockchain.com
             export LS_CONTRACT=02fc82abf81cbb36acfe196faa1ad49ddfa7abdda6
-            export DEPLOYMENT_BLOCK=10547814
+            export DEPLOYMENT_BLOCK=10682802
             export API_PORT=3002
             export INDEXER_BATCH_SIZE=1000
             export INDEXER_CONCURRENCY=10

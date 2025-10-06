@@ -168,16 +168,8 @@ export const schema = createSchema({
         
         const s = state.rows[0]
         const p = parseFloat(price.rows[0]?.price_usd) || 0
-
-        // db stores as quoted hex, convert to decimal
-        const parseHexToBigInt = (hexStr) => {
-          if (!hexStr || hexStr === '0') return BigInt(0);
-          const cleanHex = hexStr.replace(/"/g, '');
-          return BigInt('0x' + cleanHex);
-        };
-
-        const staked = parseHexToBigInt(s?.total_pool_stake_token)
-        const liquid = parseHexToBigInt(s?.total_pool_liquid)
+        const staked = BigInt(s?.total_pool_stake_token || '0')
+        const liquid = BigInt(s?.total_pool_liquid || '0')
 
         return {
           blockNumber: s?.block_number || '0',
