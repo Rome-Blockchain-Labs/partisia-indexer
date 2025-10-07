@@ -1,6 +1,6 @@
 {
-  "name": "ls-indexer",
-  "version": "1.0.0",
+  "name": "partisia-indexer",
+  "version": "0.1.1",
   "scripts": {
     "dev": "bun run src/index.ts",
     "build": "tsc",
