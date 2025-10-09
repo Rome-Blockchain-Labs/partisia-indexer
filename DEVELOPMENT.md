@@ -1,6 +1,11 @@
-# deployment
+# development/deployment
 
 ## quick start
+
+tunnel to server from your local machine
+```bash
+ssh -L 58081:95.216.235.72:18080 root@helhetz02.romenet.io -N -v
+```
 
 ```bash
 git clone repo
