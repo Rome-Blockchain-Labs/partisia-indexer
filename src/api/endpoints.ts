@@ -1,5 +1,6 @@
 import express from 'express';
 import { Pool } from 'pg';
+import path from 'path';
 import config from '../config';
 import { createYoga } from 'graphql-yoga'
 import { schema } from '../graphql/schema'
@@ -13,6 +14,10 @@ app.use((req, res, next) => {
   if (req.method === 'OPTIONS') return res.sendStatus(200);
   next();
 });
+
+// Serve static files from the example-graph build
+const staticPath = path.join(__dirname, '../../example-graph/build');
+app.use(express.static(staticPath));
 
 const pool = new Pool({
   host: config.db.host,
@@ -48,32 +53,23 @@ LIMIT 1000
 
 app.get('/accrueRewards', async (req, res) => {
   try {
+    // Get accrue reward transactions from the transactions table
     const result = await pool.query(`
-WITH rate_changes AS (
-SELECT
-block_number,
-exchange_rate,
-total_pool_liquid,
-timestamp,
-LAG(exchange_rate) OVER (ORDER BY block_number) as prev_rate
-FROM contract_states
-ORDER BY block_number DESC
-LIMIT 100
-)
-SELECT
-block_number::text as timestamp,
-CASE
-WHEN exchange_rate > prev_rate
-THEN ROUND((exchange_rate - prev_rate) * total_pool_liquid::numeric)::text
-ELSE '0'
-END as "userRewardAmount",
-'0' as "protocolRewardAmount",
-3 as "rewardType",
-true as "isExtended"
-FROM rate_changes
-WHERE prev_rate IS NOT NULL AND exchange_rate > prev_rate
-ORDER BY block_number DESC
-`);
+      SELECT
+        block_number::text as timestamp,
+        COALESCE((metadata->>'userRewards')::text, amount) as "userRewardAmount",
+        COALESCE((metadata->>'protocolRewards')::text, '0') as "protocolRewardAmount",
+        3 as "rewardType",
+        true as "isExtended",
+        metadata->>'exchangeRate' as "exchangeRate",
+        tx_hash,
+        timestamp as actual_timestamp
+      FROM transactions
+      WHERE action = 'accrueRewards'
+      ORDER BY block_number DESC
+      LIMIT 100
+    `);
+
     res.json({ accrueRewards: result.rows });
   } catch (error) {
     console.error('Error fetching rewards:', error);
@@ -376,6 +372,12 @@ app.get('/api', (req, res) => {
       }
     }
   });
+});
+
+// Catch-all route to serve React app for client-side routing
+// Must be placed after all API routes
+app.get('*', (req, res) => {
+  res.sendFile(path.join(staticPath, 'index.html'));
 });
 
 export default app;

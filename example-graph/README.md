@@ -35,11 +35,22 @@ npm install
 
 ## Configuration
 
-Set environment variables in `.env`:
+### Default Configuration
+The dashboard automatically connects to the appropriate API:
+- **Production build**: https://partisia.subgraph.romenet.io
+- **Development**: http://localhost:3002
 
+### Custom Configuration
+To use a custom API endpoint, create a `.env.local` file:
+
+```bash
+cp .env.example .env.local
+```
+
+Then set your environment variables:
 ```env
-REACT_APP_API_URL=http://localhost:3000
-REACT_APP_WS_URL=ws://localhost:3001/ws
+REACT_APP_API_URL=https://your-api-endpoint.com
+REACT_APP_WS_URL=wss://your-websocket-endpoint.com/ws
 ```
 
 ## Usage

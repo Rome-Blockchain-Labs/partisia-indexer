@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import indexer from './services/indexer';
 import coingecko from './services/coingecko';
+import eventIndexer from './services/event-indexer';
 import db from './db/client';
 import app from './api/endpoints';
 
@@ -21,8 +22,12 @@ async function main() {
     // Start indexers in background
     await Promise.all([
       indexer.start(),
-      coingecko.start()
+      coingecko.start(),
+      eventIndexer.start()
     ]);
+
+    // Index historical events on startup
+    await eventIndexer.fetchHistoricalEvents();
 
   } catch (error) {
     console.error('Fatal error:', error);
@@ -34,6 +39,7 @@ process.on('SIGINT', async () => {
   console.log('Shutting down...');
   indexer.stop();
   coingecko.stop();
+  eventIndexer.stop();
   await db.close();
   process.exit(0);
 });
@@ -42,6 +48,7 @@ process.on('SIGTERM', async () => {
   console.log('Shutting down...');
   indexer.stop();
   coingecko.stop();
+  eventIndexer.stop();
   await db.close();
   process.exit(0);
 });

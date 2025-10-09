@@ -1,6 +1,7 @@
 import { Pool } from 'pg';
 import axios from 'axios';
 import config from '../config';
+import RateLimiter from './rate-limiter';
 
 const CONTRACT_ADDRESS = process.env.LS_CONTRACT || '02fc82abf81cbb36acfe196faa1ad49ddfa7abdda6';
 
@@ -44,107 +45,118 @@ class Indexer {
     errors: 0,
     startTime: Date.now()
   };
+  private rateLimiter = new RateLimiter();
+  private fallbackBlockHeight = 0;
+  private lastSuccessfulApiCall = Date.now();
+  private apiHealthScore = 100;
+  private requestBatch: number[] = [];
+  private batchProcessor: NodeJS.Timeout | null = null;
 
   async start() {
     this.running = true;
-    console.log('Starting LS Contract Indexer');
+    console.log('Starting LS Contract Indexer with hardened rate limiter');
     console.log(`Contract: ${CONTRACT_ADDRESS} on Shard2`);
-    console.log(`Rate limits active - head priority mode`);
+    console.log('Security-focused rate limiting with circuit breaker active');
 
-    // Initialize backfill cursor
     const lastIndexed = await this.getLastIndexedBlock();
     const deploymentBlock = parseInt(process.env.DEPLOYMENT_BLOCK || '10682802');
     this.backfillCursor = lastIndexed || deploymentBlock;
+    this.fallbackBlockHeight = lastIndexed || deploymentBlock;
 
-    // Start only essential processes to respect rate limits
+    this.rateLimiter.on('circuit-open', () => {
+      console.warn('Circuit breaker OPEN - API unavailable, using fallback mode');
+      this.apiHealthScore = 0;
+    });
+
+    this.rateLimiter.on('circuit-half-open', () => {
+      console.log('Circuit breaker HALF-OPEN - testing API availability');
+      this.apiHealthScore = 50;
+    });
+
+    this.rateLimiter.on('circuit-closed', () => {
+      console.log('Circuit breaker CLOSED - API healthy, pushing to 5 RPS');
+      this.apiHealthScore = 100;
+    });
+
+    this.rateLimiter.on('retry', ({ attempt, backoffMs, statusCode }) => {
+      if (statusCode === 429) {
+        console.log(`Rate limited, retrying in ${backoffMs}ms (attempt ${attempt})`);
+      }
+    });
+
     await Promise.all([
-      this.headTrackingLoop(),      // Priority 1: Keep head current
-      this.lightBackfillLoop(),     // Priority 2: Slow historical backfill
-      this.statsReporter()
+      this.headTrackingLoop(),
+      this.lightBackfillLoop(),
+      this.statsReporter(),
+      this.healthMonitor(),
+      this.batchProcessorLoop()
     ]);
   }
 
-  // Conservative head tracking for rate-limited RPC
   private async headTrackingLoop() {
-    console.log('Head tracking: checking every 30 seconds');
+    console.log('Head tracking: adaptive interval based on API health');
 
     while (this.running) {
       try {
-        const currentBlock = await this.getCurrentBlock();
+        const currentBlock = await this.getCurrentBlockWithFallback();
 
         if (currentBlock && currentBlock > this.lastHeadBlock) {
-          // Only fetch the latest block to minimize API calls
-          const data = await this.fetchBlockOptimized(currentBlock);
+          const data = await this.fetchBlockWithRateLimiter(currentBlock);
 
           if (data && data.state) {
             await this.storeBlock(data);
-            console.log(`Head updated: block ${currentBlock} | rate=${data.exchangeRate?.toFixed(6)}`);
+            console.log(`Head updated: block ${currentBlock} | rate=${data.exchangeRate?.toFixed(6)} | health=${this.apiHealthScore}%`);
             this.lastHeadBlock = currentBlock;
+            this.fallbackBlockHeight = Math.max(this.fallbackBlockHeight, currentBlock);
           }
         }
 
-        // Check every 30 seconds to respect rate limits
-        await new Promise(r => setTimeout(r, 30000));
+        const interval = this.calculatePollingInterval();
+        await new Promise(r => setTimeout(r, interval));
       } catch (error) {
-        if (error.response?.status === 429) {
-          console.warn('Rate limited - backing off for 60 seconds');
-          await new Promise(r => setTimeout(r, 60000));
-        } else {
-          console.error('Head tracking error:', error.message);
-          await new Promise(r => setTimeout(r, 30000));
-        }
+        console.error('Head tracking error:', error.message);
+        this.apiHealthScore = Math.max(0, this.apiHealthScore - 10);
+
+        const backoffTime = Math.min(60000, 10000 * (1 + (100 - this.apiHealthScore) / 20));
+        await new Promise(r => setTimeout(r, backoffTime));
       }
     }
   }
 
-  // Very light backfilling to respect rate limits
   private async lightBackfillLoop() {
-    console.log('Light backfill: 10 blocks every 5 minutes');
+    console.log('Adaptive backfill: rate adjusted based on API health');
 
-    // Wait 2 minutes before starting backfill
-    await new Promise(r => setTimeout(r, 120000));
+    await new Promise(r => setTimeout(r, 30000));
 
     while (this.running) {
       try {
+        if (this.apiHealthScore < 30) {
+          console.log('Skipping backfill due to poor API health');
+          await new Promise(r => setTimeout(r, 300000));
+          continue;
+        }
+
         const gap = await this.findNextGap();
 
         if (gap && gap.start) {
-          // Only process 10 blocks at a time with rate-limited RPC
+          const batchSize = this.apiHealthScore > 70 ? 25 : 10;
           const blocks = Array.from(
-            { length: Math.min(10, gap.end - gap.start + 1) },
+            { length: Math.min(batchSize, gap.end - gap.start + 1) },
             (_, i) => gap.start + i
           );
 
-          console.log(`Backfilling blocks ${blocks[0]} to ${blocks[blocks.length - 1]}`);
+          console.log(`Queueing ${blocks.length} blocks for batch processing: ${blocks[0]}-${blocks[blocks.length - 1]}`);
 
-          // Process one at a time to avoid rate limits
-          for (const block of blocks) {
-            try {
-              const data = await this.fetchBlockOptimized(block);
-              if (data && data.state) {
-                await this.storeBlock(data);
-              }
-              // 2 second delay between each block
-              await new Promise(r => setTimeout(r, 2000));
-            } catch (error) {
-              if (error.response?.status === 429) {
-                console.warn('Backfill rate limited - pausing for 5 minutes');
-                await new Promise(r => setTimeout(r, 300000));
-                break;
-              }
-            }
-          }
-
+          this.requestBatch.push(...blocks);
           this.backfillCursor = blocks[blocks.length - 1];
         }
 
-        // Wait 5 minutes before next backfill batch
-        await new Promise(r => setTimeout(r, 300000));
+        const waitTime = this.apiHealthScore > 75 ? 10000 : 60000;
+        await new Promise(r => setTimeout(r, waitTime));
       } catch (error) {
         console.error('Backfill error:', error.message);
         this.stats.errors++;
-        // Wait 10 minutes on error
-        await new Promise(r => setTimeout(r, 600000));
+        await new Promise(r => setTimeout(r, 300000));
       }
     }
   }
@@ -246,51 +258,56 @@ class Indexer {
     }
   }
 
-  // Optimized block fetching with circuit breaker
-  private async fetchBlockOptimized(block: number): Promise<BlockData | null> {
+  private async fetchBlockWithRateLimiter(block: number): Promise<BlockData | null> {
     this.stats.requestsMade++;
 
-    const maxRetries = 2;
-    const baseTimeout = 5000;
+    try {
+      const result = await this.rateLimiter.executeWithRetry(
+        async () => {
+          const resp = await axios.get(
+            `${process.env.PARTISIA_API_URL}/chain/contracts/${CONTRACT_ADDRESS}?blockTime=${block}`,
+            {
+              timeout: 10000,
+              validateStatus: (status) => status === 200 || status === 404
+            }
+          );
 
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      try {
-        const resp = await axios.get(
-          `${process.env.PARTISIA_API_URL}/chain/contracts/${CONTRACT_ADDRESS}?blockTime=${block}`,
-          {
-            timeout: baseTimeout * (attempt + 1),
-            validateStatus: (status) => status === 200 || status === 404
+          if (resp.status === 404) {
+            return null;
           }
-        );
 
-        if (resp.status === 404) {
-          return null; // Block doesn't exist yet
-        }
+          if (resp.data?.serializedContract) {
+            this.lastSuccessfulApiCall = Date.now();
+            this.apiHealthScore = Math.min(100, this.apiHealthScore + 5);
 
-        if (resp.data?.serializedContract) {
-          return {
-            block,
-            timestamp: new Date(
-              resp.data.account?.latestStorageFeeTime
-                ? parseInt(resp.data.account.latestStorageFeeTime)
-                : Date.now()
-            ),
-            state: require('../abi/liquid_staking').deserializeState(
-              Buffer.from(resp.data.serializedContract, 'base64')
-            ),
-            latestStorageFeeTime: resp.data.account?.latestStorageFeeTime
-          };
+            return {
+              block,
+              timestamp: new Date(
+                resp.data.account?.latestStorageFeeTime
+                  ? parseInt(resp.data.account.latestStorageFeeTime)
+                  : Date.now()
+              ),
+              state: require('../abi/liquid_staking').deserializeState(
+                Buffer.from(resp.data.serializedContract, 'base64')
+              ),
+              latestStorageFeeTime: resp.data.account?.latestStorageFeeTime
+            };
+          }
+          return null;
+        },
+        {
+          url: `block-${block}`,
+          maxRetries: 5,
+          timeout: 8000,
+          cacheTTL: 30000
         }
-        return null;
-      } catch (error) {
-        if (attempt === maxRetries) {
-          throw error;
-        }
-        // Exponential backoff
-        await new Promise(r => setTimeout(r, Math.min(1000 * Math.pow(2, attempt), 10000)));
-      }
+      );
+
+      return result;
+    } catch (error) {
+      this.apiHealthScore = Math.max(0, this.apiHealthScore - 5);
+      throw error;
     }
-    return null;
   }
 
   // Calculate optimal batch size based on system state
@@ -384,16 +401,89 @@ class Indexer {
     }));
   }
 
-  async getCurrentBlock(): Promise<number | null> {
+  private async getCurrentBlockWithFallback(): Promise<number | null> {
     try {
-      const response = await axios.get(
-        `${process.env.PARTISIA_API_URL}/blockchain/info`,
-        { timeout: 5000 }
-      );
-      return response.data?.bestBlock || null;
+      // Instead of trying to estimate blocks, use a conservative increment approach
+      const lastIndexed = await this.getLastIndexedBlock();
+
+      // Test if we can fetch a few blocks ahead of our last indexed
+      for (let i = 1; i <= 10; i++) {
+        const testBlock = lastIndexed + i;
+        try {
+          const response = await axios.get(
+            `${process.env.PARTISIA_API_URL}/chain/contracts/${CONTRACT_ADDRESS}?blockTime=${testBlock}`,
+            { timeout: 3000, validateStatus: (status) => status === 200 || status === 404 }
+          );
+
+          if (response.status === 200 && response.data?.serializedContract) {
+            this.lastSuccessfulApiCall = Date.now();
+            this.apiHealthScore = Math.min(100, this.apiHealthScore + 2);
+            this.fallbackBlockHeight = Math.max(this.fallbackBlockHeight, testBlock);
+            console.log(`Found available block: ${testBlock}`);
+            return testBlock;
+          }
+        } catch (error) {
+          // Skip this block and try next
+          continue;
+        }
+      }
+
+      // If no new blocks found, return the last known good block
+      console.log(`No new blocks found, staying at: ${lastIndexed}`);
+      return lastIndexed;
     } catch (error) {
-      return null;
+      console.error('Failed to get current block:', error.message);
+      return this.calculateFallbackBlock();
     }
+  }
+
+  private calculateFallbackBlock(): number {
+    const timeSinceLastSuccess = Date.now() - this.lastSuccessfulApiCall;
+    const estimatedBlocksSinceSuccess = Math.floor(timeSinceLastSuccess / 1000);
+    const estimatedCurrent = this.fallbackBlockHeight + estimatedBlocksSinceSuccess;
+
+    // Be more conservative with fallback advances
+    const maxAdvance = Math.min(estimatedBlocksSinceSuccess, 100); // Max 100 blocks advance
+    const conservativeEstimate = this.fallbackBlockHeight + maxAdvance;
+
+    console.log(`Using calculated fallback: ${conservativeEstimate} (${maxAdvance} blocks estimated since last success)`);
+    return conservativeEstimate;
+  }
+
+  private calculatePollingInterval(): number {
+    if (this.apiHealthScore > 80) {
+      return 5000;
+    } else if (this.apiHealthScore > 50) {
+      return 8000;
+    } else if (this.apiHealthScore > 20) {
+      return 15000;
+    } else {
+      return 30000;
+    }
+  }
+
+  private async healthMonitor() {
+    while (this.running) {
+      await new Promise(r => setTimeout(r, 60000));
+
+      const timeSinceLastSuccess = Date.now() - this.lastSuccessfulApiCall;
+
+      if (timeSinceLastSuccess > 300000) {
+        console.warn('API appears to be down - entering degraded mode');
+        this.apiHealthScore = 0;
+      } else if (timeSinceLastSuccess > 120000) {
+        this.apiHealthScore = Math.min(this.apiHealthScore, 30);
+      }
+
+      const stats = this.rateLimiter.getStats();
+      if (stats.circuitState !== 'CLOSED' || stats.retryBudget.tokensRemaining < 50) {
+        console.log('Rate limiter status:', JSON.stringify(stats, null, 2));
+      }
+    }
+  }
+
+  async getCurrentBlock(): Promise<number | null> {
+    return this.getCurrentBlockWithFallback();
   }
 
   async getLastIndexedBlock(): Promise<number> {
@@ -472,7 +562,18 @@ WHERE current_state.block_number <= EXCLUDED.block_number
       const placeholders: string[] = [];
 
       let i = 1;
-      for (const [address, balance] of state.liquidTokenState.balances.entries()) {
+      // Handle both Map and object structures
+      let balanceEntries: [string, any][] = [];
+
+      if (typeof state.liquidTokenState.balances.entries === 'function') {
+        // It's a Map
+        balanceEntries = Array.from(state.liquidTokenState.balances.entries());
+      } else if (typeof state.liquidTokenState.balances === 'object') {
+        // It's a plain object
+        balanceEntries = Object.entries(state.liquidTokenState.balances);
+      }
+
+      for (const [address, balance] of balanceEntries) {
         const balanceStr = balance?.toString() || '0';
         if (balanceStr !== '0') {
           values.push(address, balanceStr, timestamp);
@@ -499,10 +600,51 @@ WHERE users.last_seen < EXCLUDED.last_seen
     data.exchangeRate = exchangeRate;
   }
 
+  private async batchProcessorLoop() {
+    console.log('Starting aggressive batch processor for 5 RPS maximum utilization');
+
+    while (this.running) {
+      try {
+        if (this.requestBatch.length > 0 && this.apiHealthScore > 30) {
+          const blocksToProcess = this.requestBatch.splice(0, 5);
+
+          const promises = blocksToProcess.map(async (block) => {
+            try {
+              const data = await this.fetchBlockWithRateLimiter(block);
+              if (data && data.state) {
+                await this.storeBlock(data);
+                return true;
+              }
+            } catch (error) {
+              console.warn(`Batch failed for block ${block}: ${error.message}`);
+              this.requestBatch.unshift(block);
+            }
+            return false;
+          });
+
+          const results = await Promise.allSettled(promises);
+          const successCount = results.filter(r => r.status === 'fulfilled').length;
+
+          if (successCount > 0) {
+            console.log(`Batch processed ${successCount}/${blocksToProcess.length} blocks`);
+          }
+        }
+
+        await new Promise(r => setTimeout(r, 1000));
+      } catch (error) {
+        console.error('Batch processor error:', error.message);
+        await new Promise(r => setTimeout(r, 5000));
+      }
+    }
+  }
+
   async stop() {
     this.running = false;
     if (this.headTracker) {
       clearInterval(this.headTracker);
+    }
+    if (this.batchProcessor) {
+      clearTimeout(this.batchProcessor);
     }
     console.log('Indexer stopped');
   }

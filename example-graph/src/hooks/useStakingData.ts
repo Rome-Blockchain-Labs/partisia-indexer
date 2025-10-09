@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { parseISO, subHours, subDays, subMonths } from 'date-fns'
+import { API_BASE_URL, WS_URL } from '../config'
 
 // Define types for better type safety
 interface ExchangeRateData {
@@ -51,7 +52,7 @@ interface UseStakingDataReturn {
   refetch: () => void
 }
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:3000'
+// API_BASE_URL now imported from config
 
 export function useStakingData(
   timePeriod: '24h' | '7d' | '30d' | '90d' | '1y' | 'all' = '30d'
@@ -195,9 +196,7 @@ export function useRealtimeUpdates(
   onUpdate: (data: CombinedDataPoint) => void
 ): void {
   useEffect(() => {
-    const ws = new WebSocket(
-      process.env.REACT_APP_WS_URL || 'ws://localhost:3001/ws'
-    )
+    const ws = new WebSocket(WS_URL)
 
     ws.onopen = () => {
       console.log('WebSocket connected')

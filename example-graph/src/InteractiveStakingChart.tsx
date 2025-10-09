@@ -17,6 +17,7 @@ import { Line } from 'react-chartjs-2'
 import zoomPlugin from 'chartjs-plugin-zoom'
 import annotationPlugin from 'chartjs-plugin-annotation'
 import { format, subDays, subMonths, parseISO } from 'date-fns'
+import { API_BASE_URL } from './config'
 
 // Register Chart.js components
 ChartJS.register(
@@ -67,8 +68,8 @@ const InteractiveStakingChart: FC = () => {
       }[timePeriod]
 
       const [priceRes, exchangeRes] = await Promise.all([
-        fetch(`http://localhost:3000/mpc/prices?hours=${hours}`),
-        fetch(`http://localhost:3000/exchangeRates?hours=${hours}`),
+        fetch(`${API_BASE_URL}/mpc/prices?hours=${hours}`),
+        fetch(`${API_BASE_URL}/exchangeRates?hours=${hours}`),
       ])
 
       const prices = await priceRes.json()
@@ -76,14 +77,14 @@ const InteractiveStakingChart: FC = () => {
 
       // Merge data by timestamp
       const mergedData: DataPoint[] = []
-      const priceMap = new Map(prices.map((p: {timestamp: string, price_usd: number}) => [p.timestamp, p]))
+      const priceMap = new Map(prices.map((p: any) => [p.time, p]))
 
       rates.forEach((r: any) => {
-        const price = priceMap.get(r.timestamp)
+        const price: any = priceMap.get(r.timestamp)
         mergedData.push({
           timestamp: r.timestamp,
           exchangeRate: parseFloat(r.exchange_rate),
-          price: price?.price_usd,
+          price: price ? parseFloat(price.price) : undefined,
           totalStaked: r.total_pool_stake_token,
         })
       })
