@@ -12,11 +12,14 @@ bunx tsx src/index.ts
 
 ## api
 
+rest:
 - `GET /stats` - protocol state
 - `GET /exchangeRates` - historical exchange rates
 - `GET /mpc/prices` - mpc price history
 - `GET /apy` - yield calculations
 - `GET /api/rewards/*` - reward tracking endpoints
+
+graphql: `POST /graphql` - subgraph-compatible queries
 
 ## requirements
 

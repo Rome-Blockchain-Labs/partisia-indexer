@@ -14,3 +14,7 @@ base: `http://localhost:3002`
 ## rewards
 - `GET /api/rewards/dashboard` - reward summary
 - `GET /api/rewards/health` - system health
+
+## graphql
+- `POST /graphql` - subgraph-compatible queries
+- example: `{ currentState { blockNumber exchangeRate } }`
