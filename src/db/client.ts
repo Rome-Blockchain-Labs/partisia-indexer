@@ -17,7 +17,7 @@ const poolConfig: PoolConfig = {
   connectionTimeoutMillis: 30000, // Longer timeout for stability
   idleTimeoutMillis: 30000, // Close idle connections
   // acquireTimeoutMillis: 60000, // Don't hang indefinitely - not supported in this pg version
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: true } : false,
+  ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: true } : false,
 };
 
 const pool = new Pool(poolConfig);

@@ -87,6 +87,7 @@ jobs:
                 - DB_NAME=ls_indexer
                 - DB_USER=indexer
                 - DB_PASSWORD=letmein
+                - DB_SSL=false
                 - BATCH_SIZE=1000
                 - CONCURRENCY=100
                 - INDEXER_BATCH_SIZE=1000
