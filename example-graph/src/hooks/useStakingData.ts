@@ -79,23 +79,67 @@ export function useStakingData(
       }
       const hours = hoursMap[timePeriod]
 
-      // Fetch exchange rate data
-      const exchangeRes = await fetch(`${API_BASE_URL}/exchangeRates?hours=${hours}`)
+      // Fetch exchange rate data using GraphQL
+      const graphQLQuery = {
+        query: `
+          query GetContractStates($first: Int!) {
+            contractStates(first: $first, orderBy: BLOCK_DESC) {
+              blockNumber
+              timestamp
+              exchangeRate
+              totalPoolStakeToken
+              totalPoolLiquid
+            }
+          }
+        `,
+        variables: {
+          first: Math.min(hours * 10, 1000) // Estimate data points based on hours
+        }
+      }
+
+      const exchangeRes = await fetch(`${API_BASE_URL}/graphql`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(graphQLQuery)
+      })
 
       if (!exchangeRes.ok) {
         throw new Error('Failed to fetch exchange rate data')
       }
 
-      const exchangeData = await exchangeRes.json() as ExchangeRateData[]
+      const graphQLResponse = await exchangeRes.json()
 
-      // Use mock price data since we don't have MPC price endpoint yet
-      const priceData: PriceData[] = []
+      if (graphQLResponse.errors) {
+        throw new Error(`GraphQL errors: ${graphQLResponse.errors.map((e: any) => e.message).join(', ')}`)
+      }
+
+      const exchangeData = graphQLResponse.data.contractStates.map((state: any) => ({
+        timestamp: state.timestamp,
+        blockTime: state.blockNumber,
+        rate: state.exchangeRate,
+        totalStake: state.totalPoolStakeToken,
+        totalLiquid: state.totalPoolLiquid
+      })) as ExchangeRateData[]
+
+      // Fetch price data from MEXC historical endpoint
+      const priceRes = await fetch(`${API_BASE_URL}/mpc/prices?hours=${hours}`)
+      if (!priceRes.ok) {
+        throw new Error('Failed to fetch price data')
+      }
+      const priceData = await priceRes.json()
 
       // Create a map of prices by timestamp for efficient lookup
-      const priceMap = new Map<string, PriceData>()
-      priceData.forEach((p) => {
-        const normalizedTimestamp = new Date(p.timestamp).toISOString()
-        priceMap.set(normalizedTimestamp, p)
+      const priceMap = new Map<string, any>()
+      priceData.forEach((p: any) => {
+        const normalizedTimestamp = new Date(p.time).toISOString()
+        priceMap.set(normalizedTimestamp, {
+          timestamp: p.time,
+          price_usd: parseFloat(p.price),
+          market_cap_usd: p.market_cap,
+          volume_24h_usd: parseFloat(p.volume || '0')
+        })
       })
 
       // Combine exchange rate and price data
@@ -103,8 +147,15 @@ export function useStakingData(
         const timestamp = new Date(ex.timestamp)
         const normalizedTimestamp = timestamp.toISOString()
 
-        const exchangeRate = parseFloat(ex.rate) // Changed from ex.exchange_rate to ex.rate
-        const price = 0.01562 // Fixed MPC price
+        // Find closest price data by day (prices are daily)
+        const dayStart = new Date(timestamp)
+        dayStart.setUTCHours(0, 0, 0, 0)
+        const dayKey = dayStart.toISOString()
+
+        const priceInfo = priceMap.get(dayKey) || { price_usd: 0.01562, market_cap_usd: null, volume_24h_usd: 0 }
+
+        const exchangeRate = parseFloat(ex.rate)
+        const price = priceInfo.price_usd
         const totalStaked = BigInt(ex.totalStake)
         const totalLiquid = BigInt(ex.totalLiquid)
 
@@ -119,8 +170,8 @@ export function useStakingData(
           totalStaked,
           totalLiquid,
           tvlUSD,
-          marketCap: 0, // No price endpoint yet
-          volume24h: 0, // No price endpoint yet
+          marketCap: priceInfo.market_cap_usd || 0,
+          volume24h: priceInfo.volume_24h_usd,
         }
       })
 
