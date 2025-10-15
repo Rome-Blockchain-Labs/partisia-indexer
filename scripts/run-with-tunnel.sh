@@ -9,7 +9,8 @@ echo "🚀 Starting Enhanced Partisia Indexer with Tunnel"
 echo "================================================"
 
 # Configuration
-REMOTE_HOST="95.216.235.72"
+JUMP_HOST="135.181.252.175"  # helhetz02.romenet.io
+REMOTE_HOST="95.216.235.72"  # Target API server
 USERNAME=${1:-root}
 LOCAL_PORT="58081"
 
@@ -26,7 +27,7 @@ check_tunnel() {
 
 # Function to setup tunnel
 setup_tunnel() {
-    echo "🚇 Setting up SSH tunnel to ${REMOTE_HOST}..."
+    echo "🚇 Setting up SSH tunnel to ${JUMP_HOST}..."
 
     # Check if tunnel already exists
     if lsof -Pi :${LOCAL_PORT} -sTCP:LISTEN -t >/dev/null 2>&1; then
@@ -45,8 +46,8 @@ setup_tunnel() {
     echo "🔗 Creating SSH tunnel..."
     ssh -f -N -o "ServerAliveInterval=30" -o "ServerAliveCountMax=3" \
         -o "ConnectTimeout=10" -o "StrictHostKeyChecking=no" \
-        -L ${LOCAL_PORT}:127.0.0.1:${LOCAL_PORT} \
-        ${USERNAME}@${REMOTE_HOST}
+        -L ${LOCAL_PORT}:${REMOTE_HOST}:18080 \
+        ${USERNAME}@${JUMP_HOST}
 
     # Wait and verify tunnel
     sleep 3
@@ -55,8 +56,8 @@ setup_tunnel() {
         return 0
     else
         echo "❌ Failed to establish working SSH tunnel"
-        echo "   Please ensure you have SSH access to ${REMOTE_HOST}"
-        echo "   Try manually: ssh ${USERNAME}@${REMOTE_HOST}"
+        echo "   Please ensure you have SSH access to ${JUMP_HOST}"
+        echo "   Try manually: ssh ${USERNAME}@${JUMP_HOST}"
         exit 1
     fi
 }
@@ -103,7 +104,7 @@ show_status() {
     echo ""
     echo "📊 System Status:"
     echo "=================="
-    echo "🚇 Tunnel: http://127.0.0.1:${LOCAL_PORT} → ${REMOTE_HOST}:${LOCAL_PORT}"
+    echo "🚇 Tunnel: http://127.0.0.1:${LOCAL_PORT} → ${REMOTE_HOST}:18080"
     echo "🗄️  Database: postgresql://indexer@localhost:5432/ls_indexer"
     echo "🌐 API Server: http://localhost:3002"
     echo "📈 Enhanced Endpoints:"
@@ -128,7 +129,7 @@ cleanup() {
     pkill -f "bun.*index.ts" 2>/dev/null || true
 
     echo "   Keeping SSH tunnel running for reuse"
-    echo "   To stop tunnel: pkill -f 'ssh.*${REMOTE_HOST}'"
+    echo "   To stop tunnel: pkill -f 'ssh.*${JUMP_HOST}'"
 }
 
 # Set up cleanup trap

@@ -1,18 +1,11 @@
-// API Configuration
-const isDevelopment = process.env.NODE_ENV === 'development'
-
+// API Configuration - reads from .env file
 export const API_CONFIG = {
-  // Use production API by default, with local fallback for development
-  API_BASE_URL: process.env.REACT_APP_API_URL ||
-    (isDevelopment ? 'http://localhost:3002' : 'https://partisia.subgraph.romenet.io'),
+  // API URLs from environment
+  API_BASE_URL: process.env.REACT_APP_API_URL || 'http://localhost:3008',
+  GRAPHQL_URL: process.env.REACT_APP_GRAPHQL_URL || 'http://localhost:3008/graphql',
 
   // WebSocket URL (if needed in future)
-  WS_URL: process.env.REACT_APP_WS_URL ||
-    (isDevelopment ? 'ws://localhost:3001/ws' : 'wss://partisia.subgraph.romenet.io/ws'),
-
-  // GraphQL endpoint
-  GRAPHQL_URL: process.env.REACT_APP_GRAPHQL_URL ||
-    (isDevelopment ? 'http://localhost:3002/graphql' : 'https://partisia.subgraph.romenet.io/graphql')
+  WS_URL: process.env.REACT_APP_WS_URL || 'ws://localhost:3008/ws'
 }
 
 // Export for easy access

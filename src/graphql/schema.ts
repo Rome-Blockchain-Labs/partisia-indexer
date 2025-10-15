@@ -1,14 +1,5 @@
 import { createSchema } from 'graphql-yoga'
-import { Pool } from 'pg'
-import config from '../config'
-
-const pool = new Pool({
-  host: config.db.host,
-  port: config.db.port,
-  database: config.db.name,
-  user: config.db.user,
-  password: config.db.password,
-});
+import db from '../db/client'
 
 export const schema = createSchema({
   typeDefs: `
@@ -129,7 +120,7 @@ export const schema = createSchema({
         query += ` ORDER BY ${orderMap[orderBy]}`
         query += ` LIMIT ${first} OFFSET ${skip}`
         
-        const result = await pool.query(query, params)
+        const result = await db.query(query, params)
         return result.rows.map(r => ({
           blockNumber: r.block_number,
           timestamp: r.timestamp.toISOString(),
@@ -148,22 +139,22 @@ export const schema = createSchema({
           FIRST_SEEN_ASC: 'first_seen ASC'
         }
         
-        const result = await pool.query(
+        const result = await db.query(
           `SELECT * FROM users ORDER BY ${orderMap[orderBy]} LIMIT $1 OFFSET $2`,
           [first, skip]
         )
         return result.rows.map(r => ({
-          address: r.address,
-          balance: r.balance,
-          firstSeen: r.first_seen.toISOString(),
-          lastSeen: r.last_seen.toISOString()
+          address: r.address || '',
+          balance: r.balance || '0',
+          firstSeen: r.first_seen ? new Date(r.first_seen).toISOString() : new Date().toISOString(),
+          lastSeen: r.last_seen ? new Date(r.last_seen).toISOString() : new Date().toISOString()
         }))
       },
       
       currentState: async () => {
         const [state, price] = await Promise.all([
-          pool.query('SELECT * FROM current_state WHERE id = 1'),
-          pool.query('SELECT price_usd FROM price_history ORDER BY timestamp DESC LIMIT 1')
+          db.query('SELECT * FROM current_state WHERE id = 1'),
+          db.query('SELECT price_usd FROM price_history ORDER BY timestamp DESC LIMIT 1')
         ])
         
         const s = state.rows[0]
@@ -182,8 +173,8 @@ export const schema = createSchema({
       
       exchangeRate: async () => {
         const [state, price] = await Promise.all([
-          pool.query('SELECT exchange_rate FROM current_state WHERE id = 1'),
-          pool.query('SELECT price_usd FROM price_history ORDER BY timestamp DESC LIMIT 1')
+          db.query('SELECT exchange_rate FROM current_state WHERE id = 1'),
+          db.query('SELECT price_usd FROM price_history ORDER BY timestamp DESC LIMIT 1')
         ])
         
         const rate = parseFloat(state.rows[0]?.exchange_rate) || 1.0
@@ -198,7 +189,7 @@ export const schema = createSchema({
       },
       
       priceHistory: async (_, { hours }) => {
-        const result = await pool.query(
+        const result = await db.query(
           `SELECT timestamp, price_usd, market_cap_usd, volume_24h_usd 
            FROM price_history 
            WHERE timestamp > NOW() - INTERVAL '1 hour' * $1
