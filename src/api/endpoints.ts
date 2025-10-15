@@ -96,9 +96,19 @@ function handleError(error: unknown, res: express.Response, context: string): vo
   }
 }
 
-// Serve static files from the example-graph build
+// Serve static files from the example-graph build (if available)
 const staticPath = path.join(__dirname, '../../example-graph/build');
-app.use(express.static(staticPath));
+try {
+  const fs = require('fs');
+  if (fs.existsSync(staticPath)) {
+    app.use(express.static(staticPath));
+    console.log('✅ Serving frontend from', staticPath);
+  } else {
+    console.log('⚠️ Frontend build not found at', staticPath);
+  }
+} catch (error) {
+  console.log('⚠️ Could not serve frontend:', (error as Error).message);
+}
 
 app.get('/exchangeRates', async (req, res) => {
   try {

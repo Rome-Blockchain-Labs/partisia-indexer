@@ -76,18 +76,25 @@ jobs:
               depends_on:
                 - postgres
               environment:
-                - PARTISIA_API_URL=https://reader.partisiablockchain.com
+                - NODE_ENV=production
+                - API_PORT=3002
+                - PARTISIA_API_URL=http://95.216.235.72:18080
                 - LS_CONTRACT=02fc82abf81cbb36acfe196faa1ad49ddfa7abdda6
+                - PARTISIA_SHARD=Shard2
                 - DEPLOYMENT_BLOCK=10682802
                 - DB_HOST=postgres
                 - DB_PORT=5432
                 - DB_NAME=ls_indexer
                 - DB_USER=indexer
                 - DB_PASSWORD=letmein
+                - BATCH_SIZE=1000
+                - CONCURRENCY=100
                 - INDEXER_BATCH_SIZE=1000
-                - INDEXER_CONCURRENCY=10
+                - INDEXER_CONCURRENCY=100
                 - INDEX_INTERVAL_S=10
-                - API_PORT=3002
+                - MAX_RETRIES=3
+                - MEXC_SYMBOL=MPCUSDT
+                - MEXC_POLL_INTERVAL=10
                 - COINGECKO_API_KEY=${{ secrets.COINGECKO_API_KEY || 'CG-WHeHa5zx8cdGLqhAvbzDTZXh' }}
               ports:
                 - '${{ env.PORTS_PREFIX }}942:3002'
