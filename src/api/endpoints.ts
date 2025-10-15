@@ -558,7 +558,28 @@ app.get('/stats', async (req, res) => {
 // Catch-all route to serve React app for client-side routing
 // Must be placed after all API routes
 app.get('*', (req, res) => {
-  res.sendFile(path.join(staticPath, 'index.html'));
+  try {
+    const fs = require('fs');
+    const indexPath = path.join(staticPath, 'index.html');
+
+    if (fs.existsSync(indexPath)) {
+      res.sendFile(indexPath);
+    } else {
+      // Fallback API response when frontend is not available
+      res.json({
+        message: 'Partisia Blockchain Indexer API',
+        endpoints: {
+          graphql: '/graphql',
+          api_info: '/api',
+          status: '/status',
+          stats: '/stats'
+        },
+        note: 'Frontend build not available. Use GraphQL endpoint for subgraph queries.'
+      });
+    }
+  } catch (error) {
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
 export default app;
