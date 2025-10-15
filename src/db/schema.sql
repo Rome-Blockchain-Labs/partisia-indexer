@@ -16,7 +16,22 @@ CREATE TABLE contract_states (
   exchange_rate DECIMAL(20,10) NOT NULL,
   stake_token_balance TEXT NOT NULL,
   buy_in_percentage TEXT NOT NULL,
-  buy_in_enabled BOOLEAN NOT NULL DEFAULT false
+  buy_in_enabled BOOLEAN NOT NULL DEFAULT false,
+  -- Additional contract fields
+  token_for_staking TEXT,
+  staking_responsible TEXT,
+  administrator TEXT,
+  length_of_cooldown_period TEXT,
+  length_of_redeem_period TEXT,
+  amount_of_buy_in_locked_stake_tokens TEXT,
+  -- Token metadata
+  token_name TEXT,
+  token_symbol TEXT,
+  token_decimals INTEGER,
+  -- Aggregate data
+  pending_unlocks_count INTEGER DEFAULT 0,
+  buy_in_tokens_count INTEGER DEFAULT 0,
+  total_pending_unlock_amount TEXT DEFAULT '0'
 );
 
 -- Current state (single row, always updated)
@@ -29,7 +44,22 @@ CREATE TABLE current_state (
   exchange_rate DECIMAL(20,10) NOT NULL,
   stake_token_balance TEXT NOT NULL,
   buy_in_percentage TEXT NOT NULL,
-  buy_in_enabled BOOLEAN NOT NULL DEFAULT false
+  buy_in_enabled BOOLEAN NOT NULL DEFAULT false,
+  -- Additional contract fields
+  token_for_staking TEXT,
+  staking_responsible TEXT,
+  administrator TEXT,
+  length_of_cooldown_period TEXT,
+  length_of_redeem_period TEXT,
+  amount_of_buy_in_locked_stake_tokens TEXT,
+  -- Token metadata
+  token_name TEXT,
+  token_symbol TEXT,
+  token_decimals INTEGER,
+  -- Aggregate data
+  pending_unlocks_count INTEGER DEFAULT 0,
+  buy_in_tokens_count INTEGER DEFAULT 0,
+  total_pending_unlock_amount TEXT DEFAULT '0'
 );
 
 -- Transaction history

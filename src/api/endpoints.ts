@@ -1,44 +1,140 @@
 import express from 'express';
-import { Pool } from 'pg';
+import path from 'path';
 import config from '../config';
 import { createYoga } from 'graphql-yoga'
 import { schema } from '../graphql/schema'
+import db from '../db/client';
 
 const app = express();
-app.use(express.json());
+
+// Security middleware
+app.use(express.json({ limit: '1mb' })); // Limit payload size
+app.use('/api', express.json({ limit: '100kb' })); // Stricter limit for API
+
+// Secure CORS configuration
+const allowedOrigins = process.env.NODE_ENV === 'production'
+  ? config.api.corsOrigins
+  : ['http://localhost:3000', 'http://localhost:3002'];
+
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
+  const origin = req.headers.origin;
+  let isAllowed = false;
+
+  if (origin) {
+    // Check exact matches
+    isAllowed = allowedOrigins.includes(origin);
+
+    // Check pattern matches for production
+    if (!isAllowed && process.env.NODE_ENV === 'production') {
+      isAllowed = config.api.corsPatterns.some(pattern => pattern.test(origin));
+    }
+  }
+
+  if (isAllowed) {
+    res.header('Access-Control-Allow-Origin', origin);
+  }
+
   res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type');
+  res.header('X-Content-Type-Options', 'nosniff');
+  res.header('X-Frame-Options', 'DENY');
+  res.header('X-XSS-Protection', '1; mode=block');
+
   if (req.method === 'OPTIONS') return res.sendStatus(200);
   next();
 });
 
-const pool = new Pool({
-  host: config.db.host,
-  port: config.db.port,
-  database: config.db.name,
-  user: config.db.user,
-  password: config.db.password,
-  max: 20,
-  connectionTimeoutMillis: 2000,
+// Rate limiting (simple in-memory implementation)
+const rateLimit = new Map<string, { count: number; resetTime: number }>();
+const RATE_LIMIT = 100; // requests per minute
+const WINDOW_MS = 60 * 1000;
+
+app.use((req, res, next) => {
+  const key = req.ip;
+  const now = Date.now();
+
+  if (!rateLimit.has(key)) {
+    rateLimit.set(key, { count: 1, resetTime: now + WINDOW_MS });
+    return next();
+  }
+
+  const limit = rateLimit.get(key)!;
+  if (now > limit.resetTime) {
+    limit.count = 1;
+    limit.resetTime = now + WINDOW_MS;
+    return next();
+  }
+
+  if (limit.count >= RATE_LIMIT) {
+    return res.status(429).json({ error: 'Rate limit exceeded' });
+  }
+
+  limit.count++;
+  next();
 });
+
+// Input validation helper
+function validateNumericInput(value: string | undefined, min: number, max: number, defaultValue: number): number {
+  if (!value) return defaultValue;
+  const parsed = parseInt(value, 10);
+  if (isNaN(parsed) || parsed < min || parsed > max) {
+    throw new Error(`Invalid input: must be between ${min} and ${max}`);
+  }
+  return parsed;
+}
+
+// Safe error response helper
+function handleError(error: unknown, res: express.Response, context: string): void {
+  // Log full error for debugging
+  console.error(`API Error [${context}]:`, error);
+
+  // Only expose safe error messages to clients
+  if (error instanceof Error && error.message.includes('Invalid input')) {
+    res.status(400).json({ error: error.message });
+  } else {
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// Serve static files from the example-graph build
+const staticPath = path.join(__dirname, '../../example-graph/build');
+app.use(express.static(staticPath));
 
 app.get('/exchangeRates', async (req, res) => {
   try {
-    const hours = parseInt(req.query.hours as string) || 24;
-    const result = await pool.query(`
-SELECT 
-block_number as "blockTime",
-exchange_rate as rate,
-total_pool_stake_token as "totalStake",
-total_pool_liquid as "totalLiquid",
-timestamp
-FROM contract_states
-WHERE timestamp > NOW() - INTERVAL '1 hour' * $1
-ORDER BY block_number DESC
-LIMIT 1000
-`, [hours]);
+    const hours = validateNumericInput(req.query.hours as string, 1, 8760, 24); // 1 hour to 1 year
+
+    // For charts, we want evenly distributed data points, not every single block
+    let limit, interval;
+    if (hours <= 24) {
+      limit = 100; // 100 points for 24h
+      interval = Math.max(1, Math.floor((hours * 3600) / 100));
+    } else if (hours <= 168) { // 7 days
+      limit = 200;
+      interval = Math.max(1, Math.floor((hours * 3600) / 200));
+    } else {
+      limit = 500;
+      interval = Math.max(1, Math.floor((hours * 3600) / 500));
+    }
+
+    const result = await db.query(`
+WITH ranked_states AS (
+  SELECT
+    block_number as "blockTime",
+    exchange_rate as rate,
+    total_pool_stake_token as "totalStake",
+    total_pool_liquid as "totalLiquid",
+    timestamp,
+    ROW_NUMBER() OVER (ORDER BY block_number DESC) as rn
+  FROM contract_states
+)
+SELECT "blockTime", rate, "totalStake", "totalLiquid", timestamp
+FROM ranked_states
+WHERE rn % $1 = 0 OR rn = 1
+ORDER BY "blockTime" ASC
+LIMIT $2
+`, [interval, limit]);
+
     res.json(result.rows);
   } catch (error) {
     console.error('Error fetching rates:', error);
@@ -48,32 +144,23 @@ LIMIT 1000
 
 app.get('/accrueRewards', async (req, res) => {
   try {
-    const result = await pool.query(`
-WITH rate_changes AS (
-SELECT
-block_number,
-exchange_rate,
-total_pool_liquid,
-timestamp,
-LAG(exchange_rate) OVER (ORDER BY block_number) as prev_rate
-FROM contract_states
-ORDER BY block_number DESC
-LIMIT 100
-)
-SELECT
-block_number::text as timestamp,
-CASE
-WHEN exchange_rate > prev_rate
-THEN ROUND((exchange_rate - prev_rate) * total_pool_liquid::numeric)::text
-ELSE '0'
-END as "userRewardAmount",
-'0' as "protocolRewardAmount",
-3 as "rewardType",
-true as "isExtended"
-FROM rate_changes
-WHERE prev_rate IS NOT NULL AND exchange_rate > prev_rate
-ORDER BY block_number DESC
-`);
+    // Get accrue reward transactions from the transactions table
+    const result = await db.query(`
+      SELECT
+        block_number::text as timestamp,
+        COALESCE((metadata->>'userRewards')::text, amount) as "userRewardAmount",
+        COALESCE((metadata->>'protocolRewards')::text, '0') as "protocolRewardAmount",
+        3 as "rewardType",
+        true as "isExtended",
+        metadata->>'exchangeRate' as "exchangeRate",
+        tx_hash,
+        timestamp as actual_timestamp
+      FROM transactions
+      WHERE action = 'accrueRewards'
+      ORDER BY block_number DESC
+      LIMIT 100
+    `);
+
     res.json({ accrueRewards: result.rows });
   } catch (error) {
     console.error('Error fetching rewards:', error);
@@ -83,8 +170,8 @@ ORDER BY block_number DESC
 
 app.get('/daily', async (req, res) => {
   try {
-    const days = parseInt(req.query.days as string) || 30;
-    const result = await pool.query(`
+    const days = validateNumericInput(req.query.days as string, 1, 365, 30); // 1 day to 1 year
+    const result = await db.query(`
 SELECT
 DATE_TRUNC('day', timestamp) as date,
 MIN(block_number) as first_block,
@@ -108,9 +195,9 @@ ORDER BY date DESC
 app.get('/stats', async (req, res) => {
   try {
     const [current, deployment, userCount] = await Promise.all([
-      pool.query('SELECT * FROM current_state WHERE id = 1'),
-      pool.query('SELECT * FROM contract_states ORDER BY block_number ASC LIMIT 1'),
-      pool.query('SELECT COUNT(DISTINCT address)::int as count FROM users')
+      db.query('SELECT * FROM current_state WHERE id = 1'),
+      db.query('SELECT * FROM contract_states ORDER BY block_number ASC LIMIT 1'),
+      db.query('SELECT COUNT(DISTINCT address)::int as count FROM users')
     ]);
 
     res.json({
@@ -139,9 +226,22 @@ app.get('/stats', async (req, res) => {
 
 app.get('/apy', async (req, res) => {
   try {
-    const allData = await pool.query(`
-SELECT exchange_rate, timestamp 
-FROM contract_states 
+    // Check if indexer sync is complete first
+    const indexer = require('../indexer').default;
+    const stats = await indexer.getStats();
+
+    if (!stats.syncComplete || !stats.canCalculateAPY) {
+      return res.json({
+        apy_24h: "0.00",
+        apy_7d: "0.00",
+        apy_30d: "0.00",
+        note: `Sync incomplete: ${stats.progressPercent.toFixed(1)}% - APY calculation disabled`
+      });
+    }
+
+    const allData = await db.query(`
+SELECT exchange_rate, timestamp
+FROM contract_states
 ORDER BY timestamp ASC
 `);
 
@@ -184,25 +284,19 @@ ORDER BY timestamp ASC
       const timeDiff = (new Date(newPoint.timestamp).getTime() - new Date(oldPoint.timestamp).getTime()) / (1000 * 60 * 60 * 24);
       if (timeDiff <= 0) return null;
 
-      const rateChange = (parseFloat(newPoint.exchange_rate) / parseFloat(oldPoint.exchange_rate)) - 1;
-      return (rateChange * 365 / timeDiff * 100);
+      const rateChange = parseFloat(newPoint.exchange_rate) / parseFloat(oldPoint.exchange_rate);
+      const annualizedMultiplier = Math.pow(rateChange, 365 / timeDiff);
+      return (annualizedMultiplier - 1) * 100;
     };
 
     const apy24h = dayPoint !== latest ? calculateAPY(dayPoint, latest) : null;
     const apy7d = weekPoint !== latest ? calculateAPY(weekPoint, latest) : null;
     const apy30d = monthPoint !== latest ? calculateAPY(monthPoint, latest) : null;
 
-    // fallback to oldest available data
-    const oldestPoint = points[0];
-    const fallbackAPY = calculateAPY(oldestPoint, latest);
-
     res.json({
-      apy_24h: apy24h !== null ? apy24h.toFixed(2) : (fallbackAPY !== null ? fallbackAPY.toFixed(2) : "0.00"),
-      apy_7d: apy7d !== null ? apy7d.toFixed(2) : (fallbackAPY !== null ? fallbackAPY.toFixed(2) : "0.00"),
-      apy_30d: apy30d !== null ? apy30d.toFixed(2) : (fallbackAPY !== null ? fallbackAPY.toFixed(2) : "0.00"),
-      note: fallbackAPY !== null && (apy24h === null || apy7d === null || apy30d === null) 
-        ? `Extrapolated from ${Math.floor((new Date(latest.timestamp).getTime() - new Date(oldestPoint.timestamp).getTime()) / (1000 * 60 * 60 * 24))} days of data`
-        : undefined
+      apy_24h: apy24h !== null ? apy24h.toFixed(2) : "0.00",
+      apy_7d: apy7d !== null ? apy7d.toFixed(2) : "0.00",
+      apy_30d: apy30d !== null ? apy30d.toFixed(2) : "0.00"
     });
   } catch (error) {
     console.error('Error calculating APY:', error);
@@ -210,30 +304,60 @@ ORDER BY timestamp ASC
   }
 });
 
+// Debug endpoint
+app.get('/mpc/test', (req, res) => {
+  res.json({ message: 'Updated API working', timestamp: new Date().toISOString() });
+});
+
 app.get('/mpc/prices', async (req, res) => {
   try {
-    const hours = parseInt(req.query.hours as string) || 24;
-    const result = await pool.query(`
+    const hours = validateNumericInput(req.query.hours as string, 1, 8760, 24);
+    const result = await db.query(`
 SELECT
-timestamp as time,
-price_usd as price,
-market_cap_usd as market_cap,
-volume_24h_usd as volume
-FROM price_history
-WHERE timestamp > NOW() - INTERVAL '1 hour' * $1
+  block_number,
+  exchange_rate,
+  timestamp
+FROM contract_states
+WHERE timestamp >= NOW() - INTERVAL '1 hour' * $1
 ORDER BY timestamp DESC
 LIMIT 1000
 `, [hours]);
-    res.json(result.rows);
+
+    // Fetch real blockchain timestamps using productionTime
+    const priceData = [];
+    for (const row of result.rows) {
+      try {
+        const blockResponse = await fetch(`${config.blockchain.apiUrl}/shards/${config.blockchain.shard}/blocks?blockTime=${row.block_number}`);
+        if (blockResponse.ok) {
+          const blockData = await blockResponse.json();
+          priceData.push({
+            time: new Date(blockData.productionTime).toISOString(),
+            price: row.exchange_rate,
+            market_cap: null,
+            volume: null
+          });
+        }
+      } catch (e) {
+        // Fallback to database timestamp if blockchain API fails
+        priceData.push({
+          time: new Date(row.timestamp).toISOString(),
+          price: row.exchange_rate,
+          market_cap: null,
+          volume: null
+        });
+      }
+    }
+
+    res.json(priceData);
   } catch (error) {
-    console.error('Error fetching MPC prices:', error);
-    res.status(500).json({ error: 'Failed to fetch prices' });
+    console.error('Error fetching exchange rate data:', error);
+    res.status(500).json({ error: 'Failed to fetch exchange rates' });
   }
 });
 
 app.get('/mpc/current', async (req, res) => {
   try {
-    const result = await pool.query(`
+    const result = await db.query(`
 SELECT timestamp, price_usd, market_cap_usd, volume_24h_usd
 FROM price_history
 ORDER BY timestamp DESC
@@ -254,8 +378,8 @@ LIMIT 1
 app.get('/stats/combined', async (req, res) => {
   try {
     const [current, mpcPrice] = await Promise.all([
-      pool.query('SELECT * FROM current_state WHERE id = 1'),
-      pool.query('SELECT price_usd FROM price_history ORDER BY timestamp DESC LIMIT 1')
+      db.query('SELECT * FROM current_state WHERE id = 1'),
+      db.query('SELECT price_usd FROM price_history ORDER BY timestamp DESC LIMIT 1')
     ]);
 
     const currentPrice = parseFloat(mpcPrice.rows[0]?.price_usd) || 0;
@@ -286,7 +410,7 @@ app.get('/stats/combined', async (req, res) => {
 
 app.get('/users', async (req, res) => {
   try {
-    const result = await pool.query(`
+    const result = await db.query(`
 SELECT address, balance, first_seen, last_seen
 FROM users
 ORDER BY CAST(balance AS NUMERIC) DESC
@@ -307,47 +431,51 @@ const yoga = createYoga({
 
 app.use('/graphql', yoga)
 
+
 app.get('/health', async (req, res) => {
   try {
-    const result = await pool.query('SELECT NOW()');
+    const result = await db.query('SELECT NOW()');
     res.json({ status: 'ok', time: result.rows[0].now });
   } catch (error) {
-    res.status(500).json({ status: 'error', message: error.message });
+    handleError(error, res, 'status');
   }
 });
 
 app.get('/status', async (req, res) => {
   try {
-    const indexer = require('../services/indexer').default;
-    const stats = await indexer.getIndexingStats();
-
-    const deploymentBlock = config.blockchain.deploymentBlock;
-    const currentBlock = await indexer.getCurrentBlock();
-    const coverage = stats.total_blocks && currentBlock ?
-      ((stats.total_blocks / (currentBlock - deploymentBlock)) * 100).toFixed(2) : '0';
+    const indexer = require('../indexer').default;
+    const stats = await indexer.getStats();
 
     res.json({
-      mode: 'dual-mode',
-      head: {
-        current_block: currentBlock,
-        latest_indexed: stats.latest_block,
-        is_synced: currentBlock - stats.latest_block <= 1
+      mode: 'unified-subgraph-style',
+      sync: {
+        complete: stats.syncComplete,
+        canCalculateAPY: stats.canCalculateAPY,
+        progress: `${stats.progressPercent.toFixed(1)}%`,
+        lag: stats.lag
       },
-      backfill: {
-        earliest_block: stats.earliest_block,
-        deployment_block: deploymentBlock,
-        total_indexed: stats.total_blocks,
-        coverage: coverage + '%',
-        gaps: stats.gaps_detected || 0,
-        missing_blocks: stats.total_gap_blocks || 0
+      blocks: {
+        current: stats.currentBlockHeight,
+        latest: stats.latestBlock,
+        total: stats.totalBlocks
       },
-      performance: {
-        days_indexed: stats.days_indexed,
-        blocks_per_day: Math.round(stats.total_blocks / Math.max(1, stats.days_indexed))
+      health: {
+        status: stats.isHealthy ? 'healthy' : 'unhealthy'
       }
     });
   } catch (error) {
-    res.status(500).json({ error: 'Failed to get status' });
+    handleError(error, res, 'status');
+  }
+});
+
+// Simple stats endpoint
+app.get('/stats', async (req, res) => {
+  try {
+    const indexer = require('../indexer').default;
+    const stats = await indexer.getStats();
+    res.json(stats);
+  } catch (error) {
+    handleError(error, res, 'status');
   }
 });
 
@@ -376,6 +504,51 @@ app.get('/api', (req, res) => {
       }
     }
   });
+});
+
+
+// Stats endpoint
+app.get('/stats', async (req, res) => {
+  try {
+    const result = await db.query(`
+      SELECT
+        COUNT(*) as total_blocks,
+        MIN(block_number) as earliest_block,
+        MAX(block_number) as latest_block,
+        AVG(exchange_rate) as avg_exchange_rate,
+        MAX(exchange_rate) as max_exchange_rate,
+        MIN(exchange_rate) as min_exchange_rate,
+        MAX(total_pool_stake_token) as total_staked,
+        MAX(timestamp) as last_updated
+      FROM contract_states
+    `);
+
+    const stats = result.rows[0];
+    const currentPrice = 0.01562;
+    const totalStaked = parseInt(stats.total_staked || '0');
+
+    res.json({
+      totalBlocks: parseInt(stats.total_blocks),
+      latestBlock: parseInt(stats.latest_block),
+      earliestBlock: parseInt(stats.earliest_block),
+      avgExchangeRate: parseFloat(stats.avg_exchange_rate || '1'),
+      maxExchangeRate: parseFloat(stats.max_exchange_rate || '1'),
+      minExchangeRate: parseFloat(stats.min_exchange_rate || '1'),
+      totalStaked: stats.total_staked,
+      tvlUSD: (totalStaked / 1e6) * currentPrice,
+      currentPrice: currentPrice,
+      lastUpdated: stats.last_updated
+    });
+  } catch (error) {
+    console.error('Error fetching stats:', error);
+    res.status(500).json({ error: 'Failed to fetch stats' });
+  }
+});
+
+// Catch-all route to serve React app for client-side routing
+// Must be placed after all API routes
+app.get('*', (req, res) => {
+  res.sendFile(path.join(staticPath, 'index.html'));
 });
 
 export default app;
