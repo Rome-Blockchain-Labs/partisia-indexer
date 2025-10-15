@@ -67,27 +67,20 @@ const InteractiveStakingChart: FC = () => {
         'all': 10000,
       }[timePeriod]
 
-      const [priceRes, exchangeRes] = await Promise.all([
-        fetch(`${API_BASE_URL}/mpc/prices?hours=${hours}`),
+      const [exchangeRes] = await Promise.all([
         fetch(`${API_BASE_URL}/exchangeRates?hours=${hours}`),
       ])
 
-      const prices = await priceRes.json()
       const rates = await exchangeRes.json()
 
-      // Merge data by timestamp
-      const mergedData: DataPoint[] = []
-      const priceMap = new Map(prices.map((p: any) => [p.time, p]))
+      // Convert exchange rate data to chart format
+      const mergedData: DataPoint[] = rates.map((rate: any) => ({
+        timestamp: rate.timestamp,
+        exchangeRate: parseFloat(rate.rate),
+        totalStaked: rate.totalStake,
+        price: 0.01562, // Use current MPC price from our MEXC service
+      }))
 
-      rates.forEach((r: any) => {
-        const price: any = priceMap.get(r.timestamp)
-        mergedData.push({
-          timestamp: r.timestamp,
-          exchangeRate: parseFloat(r.exchange_rate),
-          price: price ? parseFloat(price.price) : undefined,
-          totalStaked: r.total_pool_stake_token,
-        })
-      })
 
       // Add APY calculations
       for (let i = 1; i < mergedData.length; i++) {

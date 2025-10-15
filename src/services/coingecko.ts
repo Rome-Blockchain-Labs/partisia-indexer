@@ -1,13 +1,48 @@
-// src/services/coingecko.ts
-import axios from 'axios';
+import axios, { AxiosError } from 'axios';
 import db from '../db/client';
 
-class CoinGecko {
+interface PriceData {
+  timestamp: Date;
+  priceUsd: number;
+  marketCapUsd?: number;
+  volume24hUsd?: number;
+}
+
+interface RateLimitState {
+  requestTimes: number[];
+  hourlyRequestTimes: number[];
+  backoffMs: number;
+  lastRequest: number;
+}
+
+class PriceService {
+  private readonly apiKey: string;
+  private readonly coinId: string;
+  private readonly baseUrl = 'https://api.coingecko.com/api/v3';
+
   private running = false;
-  private apiKey: string;
+  private rateLimitState: RateLimitState = {
+    requestTimes: [],
+    hourlyRequestTimes: [],
+    backoffMs: 1000,
+    lastRequest: 0
+  };
+
+  private readonly cache = new Map<string, { data: any; expires: number }>();
+
+  // Conservative rate limits to avoid monthly quota exhaustion
+  private readonly MINUTE_LIMIT = 30;
+  private readonly HOUR_LIMIT = 500;
+  private readonly MAX_BACKOFF = 300_000; // 5 minutes
+  private readonly BACKOFF_MULTIPLIER = 1.5;
 
   constructor() {
     this.apiKey = process.env.COINGECKO_API_KEY || '';
+    this.coinId = process.env.COINGECKO_COIN_ID || 'partisia-blockchain';
+
+    // Cleanup intervals
+    setInterval(() => this.pruneRateLimitHistory(), 60_000);
+    setInterval(() => this.pruneCache(), 300_000);
   }
 
   async start() {

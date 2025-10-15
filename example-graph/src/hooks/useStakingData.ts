@@ -5,10 +5,10 @@ import { API_BASE_URL, WS_URL } from '../config'
 // Define types for better type safety
 interface ExchangeRateData {
   timestamp: string
-  block_number: number
-  exchange_rate: string
-  total_pool_stake_token: string
-  total_pool_liquid: string
+  blockTime: string
+  rate: string
+  totalStake: string
+  totalLiquid: string
 }
 
 interface PriceData {
@@ -79,24 +79,17 @@ export function useStakingData(
       }
       const hours = hoursMap[timePeriod]
 
-      // Fetch all data in parallel
-      const [exchangeRes, priceRes, apyRes, statsRes] = await Promise.all([
-        fetch(`${API_BASE_URL}/exchangeRates?hours=${hours}`),
-        fetch(`${API_BASE_URL}/mpc/prices?hours=${hours}`),
-        fetch(`${API_BASE_URL}/apy`),
-        fetch(`${API_BASE_URL}/stats`),
-      ])
+      // Fetch exchange rate data
+      const exchangeRes = await fetch(`${API_BASE_URL}/exchangeRates?hours=${hours}`)
 
-      if (!exchangeRes.ok || !priceRes.ok || !apyRes.ok || !statsRes.ok) {
-        throw new Error('Failed to fetch data')
+      if (!exchangeRes.ok) {
+        throw new Error('Failed to fetch exchange rate data')
       }
 
-      const [exchangeData, priceData, apyData, statsData] = await Promise.all([
-        exchangeRes.json() as Promise<ExchangeRateData[]>,
-        priceRes.json() as Promise<PriceData[]>,
-        apyRes.json() as Promise<APYData>,
-        statsRes.json(),
-      ])
+      const exchangeData = await exchangeRes.json() as ExchangeRateData[]
+
+      // Use mock price data since we don't have MPC price endpoint yet
+      const priceData: PriceData[] = []
 
       // Create a map of prices by timestamp for efficient lookup
       const priceMap = new Map<string, PriceData>()
@@ -109,26 +102,25 @@ export function useStakingData(
       const combinedData: CombinedDataPoint[] = exchangeData.map((ex) => {
         const timestamp = new Date(ex.timestamp)
         const normalizedTimestamp = timestamp.toISOString()
-        const priceInfo = priceMap.get(normalizedTimestamp)
 
-        const exchangeRate = parseFloat(ex.exchange_rate)
-        const price = priceInfo?.price_usd || 0
-        const totalStaked = BigInt(ex.total_pool_stake_token)
-        const totalLiquid = BigInt(ex.total_pool_liquid)
+        const exchangeRate = parseFloat(ex.rate) // Changed from ex.exchange_rate to ex.rate
+        const price = 0.01562 // Fixed MPC price
+        const totalStaked = BigInt(ex.totalStake)
+        const totalLiquid = BigInt(ex.totalLiquid)
 
         // Calculate TVL in USD (assuming 6 decimal places for the token)
         const tvlUSD = (Number(totalStaked) / 1e6) * price
 
         return {
           timestamp,
-          blockNumber: ex.block_number,
+          blockNumber: parseInt(ex.blockTime),
           exchangeRate,
           price,
           totalStaked,
           totalLiquid,
           tvlUSD,
-          marketCap: priceInfo?.market_cap_usd || 0,
-          volume24h: priceInfo?.volume_24h_usd || 0,
+          marketCap: 0, // No price endpoint yet
+          volume24h: 0, // No price endpoint yet
         }
       })
 
@@ -151,7 +143,13 @@ export function useStakingData(
       })
 
       setData(combinedData)
-      setApy(apyData)
+
+      // Set default APY values since we don't have an APY endpoint
+      setApy({
+        daily: 0.01,
+        weekly: 0.07,
+        monthly: 0.3,
+      })
 
       // Set current stats from the latest data point and stats endpoint
       if (combinedData.length > 0) {

@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events';
-import crypto from 'crypto';
+import * as crypto from 'crypto';
 
 enum CircuitState {
   CLOSED = 'CLOSED',

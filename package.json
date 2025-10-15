@@ -10,13 +10,15 @@
   "dependencies": {
     "@partisiablockchain/abi-client": "^5.255.0",
     "@partisiablockchain/blockchain-api-transaction-client": "^5.181.0",
+    "@types/ws": "^8.18.1",
     "axios": "^1.11.0",
     "dotenv": "^16.6.1",
     "express": "^4.21.2",
     "graphql": "^16.11.0",
     "graphql-yoga": "^5.15.1",
     "pg": "^8.16.3",
-    "pino": "^9.9.0"
+    "pino": "^9.9.0",
+    "ws": "^8.18.3"
   },
   "devDependencies": {
     "form-data": "^4.0.4",

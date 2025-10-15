@@ -235,7 +235,7 @@ class Indexer {
     this.activeRequests.add(block);
 
     try {
-      const data = await this.fetchBlockOptimized(block);
+      const data = await this.fetchBlockWithRateLimiter(block);
 
       if (data && data.state) {
         // Add to cache
@@ -502,10 +502,16 @@ class Indexer {
     const stakeTokenBalanceStr = state.stakeTokenBalance?.toString() || '0';
     const buyInPercentageStr = state.buyInPercentage?.toString() || '0';
 
-    // Calculate exchange rate
+    // Calculate exchange rate - skip storing if no liquid tokens to avoid wrong data
     const totalStake = BigInt(totalPoolStakeTokenStr);
     const totalLiquid = BigInt(totalPoolLiquidStr);
-    const exchangeRate = totalLiquid === 0n ? 1.0 : Number(totalStake) / Number(totalLiquid);
+
+    if (totalLiquid === BigInt(0)) {
+      console.log(`Block ${block}: No liquid tokens yet, skipping to avoid wrong exchange rate`);
+      return;
+    }
+
+    const exchangeRate = Number(totalStake) / Number(totalLiquid);
 
     await pool.query(
       `

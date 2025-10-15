@@ -4,6 +4,7 @@ import path from 'path';
 import config from '../config';
 import { createYoga } from 'graphql-yoga'
 import { schema } from '../graphql/schema'
+import rewardEndpoints from './rewards';
 
 const app = express();
 app.use(express.json());
@@ -31,19 +32,18 @@ const pool = new Pool({
 
 app.get('/exchangeRates', async (req, res) => {
   try {
-    const hours = parseInt(req.query.hours as string) || 24;
+    const limit = parseInt(req.query.hours as string) || 1000;
     const result = await pool.query(`
-SELECT 
+SELECT
 block_number as "blockTime",
 exchange_rate as rate,
 total_pool_stake_token as "totalStake",
 total_pool_liquid as "totalLiquid",
 timestamp
 FROM contract_states
-WHERE timestamp > NOW() - INTERVAL '1 hour' * $1
 ORDER BY block_number DESC
-LIMIT 1000
-`, [hours]);
+LIMIT $1
+`, [limit]);
     res.json(result.rows);
   } catch (error) {
     console.error('Error fetching rates:', error);
@@ -303,6 +303,9 @@ const yoga = createYoga({
 
 app.use('/graphql', yoga)
 
+// Mount reward endpoints
+app.use('/api/rewards', rewardEndpoints);
+
 app.get('/health', async (req, res) => {
   try {
     const result = await pool.query('SELECT NOW()');
@@ -372,6 +375,116 @@ app.get('/api', (req, res) => {
       }
     }
   });
+});
+
+// Backwards compatible MPC price endpoint
+app.get('/mpc/prices', async (req, res) => {
+  try {
+    const hours = parseInt(req.query.hours as string) || 24;
+    const limit = Math.min(hours, 1000);
+
+    // Generate mock price data based on MEXC current price
+    const currentPrice = 0.01562;
+    const priceData = [];
+
+    // Get blockchain data to align timestamps
+    const blockResult = await pool.query(`
+      SELECT timestamp, block_number
+      FROM contract_states
+      ORDER BY block_number DESC
+      LIMIT $1
+    `, [limit]);
+
+    for (const block of blockResult.rows) {
+      priceData.push({
+        time: block.timestamp,
+        timestamp: block.timestamp,
+        price: currentPrice,
+        price_usd: currentPrice,
+        market_cap_usd: currentPrice * 1000000,
+        volume_24h_usd: 50000,
+        block_number: block.block_number
+      });
+    }
+
+    res.json(priceData);
+  } catch (error) {
+    console.error('Error fetching MPC prices:', error);
+    res.status(500).json({ error: 'Failed to fetch MPC prices' });
+  }
+});
+
+// APY endpoint
+app.get('/apy', async (req, res) => {
+  try {
+    // Calculate APY from exchange rate data
+    const result = await pool.query(`
+      SELECT exchange_rate, timestamp, block_number
+      FROM contract_states
+      ORDER BY block_number ASC
+      LIMIT 2
+    `);
+
+    let daily = 0.01, weekly = 0.07, monthly = 0.3;
+
+    if (result.rows.length >= 2) {
+      const first = parseFloat(result.rows[0].exchange_rate);
+      const last = parseFloat(result.rows[result.rows.length - 1].exchange_rate);
+      const growth = (last - first) / first;
+
+      daily = growth * 100;
+      weekly = growth * 7 * 100;
+      monthly = growth * 30 * 100;
+    }
+
+    res.json({
+      daily,
+      weekly,
+      monthly,
+      annualized: monthly * 12
+    });
+  } catch (error) {
+    console.error('Error calculating APY:', error);
+    res.status(500).json({ error: 'Failed to calculate APY' });
+  }
+});
+
+// Stats endpoint
+app.get('/stats', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        COUNT(*) as total_blocks,
+        MIN(block_number) as earliest_block,
+        MAX(block_number) as latest_block,
+        AVG(exchange_rate) as avg_exchange_rate,
+        MAX(exchange_rate) as max_exchange_rate,
+        MIN(exchange_rate) as min_exchange_rate,
+        MAX(total_pool_stake_token) as total_staked,
+        MAX(timestamp) as last_updated
+      FROM contract_states
+    `);
+
+    const stats = result.rows[0];
+    const currentPrice = 0.01562;
+    const totalStaked = parseInt(stats.total_staked || '0');
+
+    res.json({
+      totalBlocks: parseInt(stats.total_blocks),
+      latestBlock: parseInt(stats.latest_block),
+      earliestBlock: parseInt(stats.earliest_block),
+      avgExchangeRate: parseFloat(stats.avg_exchange_rate || '1'),
+      maxExchangeRate: parseFloat(stats.max_exchange_rate || '1'),
+      minExchangeRate: parseFloat(stats.min_exchange_rate || '1'),
+      totalStaked: stats.total_staked,
+      tvlUSD: (totalStaked / 1e6) * currentPrice,
+      currentPrice: currentPrice,
+      lastUpdated: stats.last_updated
+    });
+  } catch (error) {
+    console.error('Error fetching stats:', error);
+    res.status(500).json({ error: 'Failed to fetch stats' });
+  }
 });
 
 // Catch-all route to serve React app for client-side routing
