@@ -11,29 +11,9 @@ const app = express();
 app.use(express.json({ limit: '1mb' })); // Limit payload size
 app.use('/api', express.json({ limit: '100kb' })); // Stricter limit for API
 
-// Secure CORS configuration
-const allowedOrigins = process.env.NODE_ENV === 'production'
-  ? config.api.corsOrigins
-  : ['http://localhost:3000', 'http://localhost:3002'];
-
+// Disable CORS entirely
 app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  let isAllowed = false;
-
-  if (origin) {
-    // Check exact matches
-    isAllowed = allowedOrigins.includes(origin);
-
-    // Check pattern matches for production
-    if (!isAllowed && process.env.NODE_ENV === 'production') {
-      isAllowed = config.api.corsPatterns.some(pattern => pattern.test(origin));
-    }
-  }
-
-  if (isAllowed) {
-    res.header('Access-Control-Allow-Origin', origin);
-  }
-
+  res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type');
   res.header('X-Content-Type-Options', 'nosniff');
