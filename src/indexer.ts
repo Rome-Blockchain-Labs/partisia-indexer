@@ -242,18 +242,23 @@ class PartisiaIndexer {
     await db.query(`
       INSERT INTO contract_states (
         block_number, timestamp, exchange_rate,
-        total_pool_stake_token, total_pool_liquid, stake_token_balance
-      ) VALUES ($1, $2, $3, $4, $5, $6)
+        total_pool_stake_token, total_pool_liquid, stake_token_balance,
+        buy_in_percentage, buy_in_enabled
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       ON CONFLICT (block_number) DO UPDATE SET
         timestamp = EXCLUDED.timestamp,
         exchange_rate = EXCLUDED.exchange_rate,
         total_pool_stake_token = EXCLUDED.total_pool_stake_token,
         total_pool_liquid = EXCLUDED.total_pool_liquid,
-        stake_token_balance = EXCLUDED.stake_token_balance
+        stake_token_balance = EXCLUDED.stake_token_balance,
+        buy_in_percentage = EXCLUDED.buy_in_percentage,
+        buy_in_enabled = EXCLUDED.buy_in_enabled
     `, [
       blockNumber, timestamp, exchangeRate,
       stakeAmount.toString(), liquidAmount.toString(),
-      state.stakeTokenBalance?.toString() || '0'
+      state.stakeTokenBalance?.toString() || '0',
+      state.buyInPercentage?.toString() || '0',
+      state.buyInEnabled || false
     ]);
 
     // Store sparse data only when present/changed

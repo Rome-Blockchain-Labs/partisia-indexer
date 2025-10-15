@@ -97,7 +97,9 @@ CREATE TABLE price_history (
   price_usd DECIMAL(20,10) NOT NULL,
   market_cap_usd DECIMAL(30,2),
   volume_24h_usd DECIMAL(30,2),
-  UNIQUE(timestamp)
+  source TEXT NOT NULL DEFAULT 'coingecko',
+  metadata JSONB,
+  UNIQUE(timestamp, source)
 );
 
 -- MPC prices tied to blocks
@@ -120,3 +122,43 @@ CREATE INDEX idx_protocol_rewards_block ON protocol_rewards(block_number DESC);
 CREATE INDEX idx_users_balance ON users(balance DESC);
 CREATE INDEX idx_price_history_timestamp ON price_history(timestamp DESC);
 CREATE INDEX idx_mpc_prices_timestamp ON mpc_prices(timestamp DESC);
+
+-- Sparse data tables for contract state optimization
+-- Governance changes - only store when they actually change
+CREATE TABLE governance_changes (
+  block_number BIGINT PRIMARY KEY REFERENCES contract_states(block_number),
+  administrator TEXT,
+  staking_responsible TEXT,
+  token_for_staking TEXT
+);
+
+-- Token metadata - typically set once at deployment, rarely changes
+CREATE TABLE token_metadata (
+  block_number BIGINT PRIMARY KEY REFERENCES contract_states(block_number),
+  token_name TEXT,
+  token_symbol TEXT,
+  token_decimals INTEGER
+);
+
+-- Protocol parameters - only store when they change
+CREATE TABLE protocol_parameters (
+  block_number BIGINT PRIMARY KEY REFERENCES contract_states(block_number),
+  length_of_cooldown_period TEXT,
+  length_of_redeem_period TEXT,
+  buy_in_percentage TEXT,
+  buy_in_enabled BOOLEAN,
+  amount_of_buy_in_locked_stake_tokens TEXT
+);
+
+-- User activity metrics - only store when non-zero
+CREATE TABLE user_activity (
+  block_number BIGINT PRIMARY KEY REFERENCES contract_states(block_number),
+  pending_unlocks_count INTEGER,
+  buy_in_tokens_count INTEGER,
+  total_pending_unlock_amount TEXT
+);
+
+-- Indexes for sparse tables
+CREATE INDEX idx_governance_changes_block ON governance_changes(block_number DESC);
+CREATE INDEX idx_protocol_parameters_block ON protocol_parameters(block_number DESC);
+CREATE INDEX idx_user_activity_block ON user_activity(block_number DESC);

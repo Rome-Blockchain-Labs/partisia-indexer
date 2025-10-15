@@ -67,7 +67,8 @@ CREATE TABLE price_history (
   price_usd DECIMAL(20,10) NOT NULL,
   market_cap_usd DECIMAL(30,2),
   volume_24h_usd DECIMAL(30,2),
-  UNIQUE(timestamp)
+  source TEXT NOT NULL DEFAULT 'coingecko',
+  UNIQUE(timestamp, source)
 );
 
 -- MPC prices tied to blocks

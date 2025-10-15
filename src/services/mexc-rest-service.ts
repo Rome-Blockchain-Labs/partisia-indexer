@@ -113,11 +113,10 @@ class MEXCRestService {
       await db.query(`
         INSERT INTO price_history (timestamp, price_usd, market_cap_usd, volume_24h_usd, source, metadata)
         VALUES ($1, $2, $3, $4, $5, $6)
-        ON CONFLICT (timestamp) DO UPDATE SET
+        ON CONFLICT (timestamp, source) DO UPDATE SET
           price_usd = EXCLUDED.price_usd,
           volume_24h_usd = EXCLUDED.volume_24h_usd,
-          metadata = EXCLUDED.metadata,
-          source = EXCLUDED.source
+          metadata = EXCLUDED.metadata
       `, [
         ohlc.timestamp,
         ohlc.close, // Use closing price as main price

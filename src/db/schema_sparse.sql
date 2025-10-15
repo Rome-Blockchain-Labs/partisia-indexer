@@ -157,7 +157,18 @@ CREATE TABLE price_history (
   price_usd DECIMAL(20,10) NOT NULL,
   market_cap_usd DECIMAL(30,2),
   volume_24h_usd DECIMAL(30,2),
-  UNIQUE(timestamp)
+  source TEXT NOT NULL DEFAULT 'coingecko',
+  UNIQUE(timestamp, source)
+);
+
+-- MPC prices tied to blocks
+CREATE TABLE mpc_prices (
+  block_number BIGINT PRIMARY KEY,
+  timestamp TIMESTAMP NOT NULL,
+  price_usd DECIMAL(20,10) NOT NULL,
+  market_cap_usd DECIMAL(30,2),
+  volume_24h_usd DECIMAL(30,2),
+  price_change_24h DECIMAL(10,4)
 );
 
 -- Indexes
@@ -167,3 +178,4 @@ CREATE INDEX idx_transactions_action ON transactions(action);
 CREATE INDEX idx_protocol_rewards_block ON protocol_rewards(block_number DESC);
 CREATE INDEX idx_users_balance ON users(balance DESC);
 CREATE INDEX idx_price_history_timestamp ON price_history(timestamp DESC);
+CREATE INDEX idx_mpc_prices_timestamp ON mpc_prices(timestamp DESC);
