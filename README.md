@@ -1,54 +1,29 @@
-# partisia liquid staking indexer
+# partisia indexer
 
-indexes partisia liquid staking protocol state and mpc token prices.
-
-## documentation
-
-- [development guide](DEVELOPMENT.md) - deployment, setup, configuration
-- [api documentation](API_DOCS.md) - rest endpoints and graphql schemas
+partisia liquid staking protocol indexer with reward tracking.
 
 ## setup
 
 ```bash
-git clone repo
 cp .env.example .env
-docker compose up -d
+# configure: DEPLOYMENT_BLOCK, DEPLOYMENT_TIMESTAMP, DB credentials
+bunx tsx src/index.ts
 ```
 
 ## api
 
-rest: `http://localhost:3002`
-graphql: `http://localhost:3002/graphql`
+- `GET /stats` - protocol state
+- `GET /exchangeRates` - historical exchange rates
+- `GET /mpc/prices` - mpc price history
+- `GET /apy` - yield calculations
+- `GET /api/rewards/*` - reward tracking endpoints
 
-key endpoints:
-- `/stats` - protocol state
-- `/apy` - yield calculations
-- `/mpc/current` - mpc price
-- `/exchangeRates` - historical rates
-- `/users` - user balances
+## requirements
 
-## development
-
-processes ~75 blocks/second with 1000 block batches.
-
-### github workflows
-
-automated ci/cd with three workflows:
-
-- **test.yaml** - runs tests and api validation on push/pr to main/develop
-- **deploy.yaml** - manual deployment to production/development environments on helhetz01/helhetz02 servers
-- **release.yaml** - builds x86_64 binary releases on version tags
-
-deployment supports:
-- production/development environment selection
-- dual server deployment (helhetz01/helhetz02)
-- database reset option for chain resyncing
-- health checks and rollback capability
+- bun/node 18+
+- postgres 14+
+- ssh tunnel: `ssh -L 58081:95.216.235.72:18080 root@helhetz02.romenet.io -N`
 
 ## stack
 
-bun + postgres + graphql yoga + coingecko api
-
-## license
-
-mit
+bun + postgres + mexc api
