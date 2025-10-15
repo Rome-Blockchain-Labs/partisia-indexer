@@ -1,5 +1,4 @@
 import express from 'express';
-import path from 'path';
 import config from '../config';
 import { createYoga } from 'graphql-yoga'
 import { schema } from '../graphql/schema'
@@ -76,19 +75,7 @@ function handleError(error: unknown, res: express.Response, context: string): vo
   }
 }
 
-// Serve static files from the example-graph build (if available)
-const staticPath = path.join(__dirname, '../../example-graph/build');
-try {
-  const fs = require('fs');
-  if (fs.existsSync(staticPath)) {
-    app.use(express.static(staticPath));
-    console.log('✅ Serving frontend from', staticPath);
-  } else {
-    console.log('⚠️ Frontend build not found at', staticPath);
-  }
-} catch (error) {
-  console.log('⚠️ Could not serve frontend:', (error as Error).message);
-}
+// API-only server - no frontend serving
 
 app.get('/exchangeRates', async (req, res) => {
   try {
@@ -535,31 +522,18 @@ app.get('/stats', async (req, res) => {
   }
 });
 
-// Catch-all route to serve React app for client-side routing
-// Must be placed after all API routes
-app.get('*', (req, res) => {
-  try {
-    const fs = require('fs');
-    const indexPath = path.join(staticPath, 'index.html');
-
-    if (fs.existsSync(indexPath)) {
-      res.sendFile(indexPath);
-    } else {
-      // Fallback API response when frontend is not available
-      res.json({
-        message: 'Partisia Blockchain Indexer API',
-        endpoints: {
-          graphql: '/graphql',
-          api_info: '/api',
-          status: '/status',
-          stats: '/stats'
-        },
-        note: 'Frontend build not available. Use GraphQL endpoint for subgraph queries.'
-      });
-    }
-  } catch (error) {
-    res.status(500).json({ error: 'Server error' });
-  }
+// Root endpoint - API info
+app.get('/', (req, res) => {
+  res.json({
+    message: 'Partisia Blockchain Indexer API',
+    endpoints: {
+      graphql: '/graphql',
+      api_info: '/api',
+      status: '/status',
+      stats: '/stats'
+    },
+    note: 'API-only deployment. Use GraphQL endpoint for subgraph queries.'
+  });
 });
 
 export default app;
