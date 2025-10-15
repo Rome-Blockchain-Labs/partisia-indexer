@@ -1,4 +1,4 @@
-import { Pool, PoolConfig } from 'pg';
+import { Pool, PoolConfig, QueryResultRow } from 'pg';
 import config from '../config';
 import { ContractState } from '../domain/types';
 
@@ -44,7 +44,7 @@ interface TransactionData {
 }
 
 interface DatabaseClient {
-  query<T = any>(text: string, params?: any[]): Promise<{ rows: T[]; rowCount: number | null }>;
+  query<T extends QueryResultRow = any>(text: string, params?: any[]): Promise<{ rows: T[]; rowCount: number | null }>;
   saveContractState(data: ContractState): Promise<void>;
   saveTransaction(data: TransactionData): Promise<void>;
   getLatestBlock(): Promise<number>;
@@ -52,7 +52,7 @@ interface DatabaseClient {
 }
 
 const client: DatabaseClient = {
-  async query<T = any>(text: string, params?: any[]) {
+  async query<T extends QueryResultRow = any>(text: string, params?: any[]) {
     try {
       return await pool.query<T>(text, params);
     } catch (error) {

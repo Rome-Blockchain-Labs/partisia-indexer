@@ -91,11 +91,11 @@ class MEXCRestService {
       for (const kline of klines) {
         const ohlcData: OHLCData = {
           timestamp: new Date(kline[0]), // openTime
-          open: parseFloat(kline[1]),
-          high: parseFloat(kline[2]),
-          low: parseFloat(kline[3]),
-          close: parseFloat(kline[4]),
-          volume: parseFloat(kline[7]) // quoteAssetVolume (USDT volume)
+          open: kline[1],
+          high: kline[2],
+          low: kline[3],
+          close: kline[4],
+          volume: kline[7] // quoteAssetVolume (USDT volume)
         };
 
         await this.saveOHLCData(ohlcData);

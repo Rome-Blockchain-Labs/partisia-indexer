@@ -77,7 +77,7 @@ export const schema = createSchema({
   
   resolvers: {
     Query: {
-      contractStates: async (_, { first, skip, orderBy, where }) => {
+      contractStates: async (_: any, { first, skip, orderBy, where }: any) => {
         let query = 'SELECT * FROM contract_states WHERE 1=1'
         const params = []
         
@@ -117,7 +117,7 @@ export const schema = createSchema({
           TIMESTAMP_ASC: 'timestamp ASC'
         }
         
-        query += ` ORDER BY ${orderMap[orderBy]}`
+        query += ` ORDER BY ${orderMap[orderBy as keyof typeof orderMap]}`
         query += ` LIMIT ${first} OFFSET ${skip}`
         
         const result = await db.query(query, params)
@@ -131,7 +131,7 @@ export const schema = createSchema({
         }))
       },
       
-      users: async (_, { first, skip, orderBy }) => {
+      users: async (_: any, { first, skip, orderBy }: any) => {
         const orderMap = {
           BALANCE_DESC: 'CAST(balance AS NUMERIC) DESC',
           BALANCE_ASC: 'CAST(balance AS NUMERIC) ASC',
@@ -140,7 +140,7 @@ export const schema = createSchema({
         }
         
         const result = await db.query(
-          `SELECT * FROM users ORDER BY ${orderMap[orderBy]} LIMIT $1 OFFSET $2`,
+          `SELECT * FROM users ORDER BY ${orderMap[orderBy as keyof typeof orderMap]} LIMIT $1 OFFSET $2`,
           [first, skip]
         )
         return result.rows.map(r => ({

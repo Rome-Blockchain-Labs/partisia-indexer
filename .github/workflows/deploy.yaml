@@ -16,11 +16,11 @@ on:
         options: [helhetz01, helhetz02]
 
       reset_db:
-        description: 'Reset protocol DB tables (resync chain data, keep prices)'
+        description: 'Database reset mode'
         required: false
-        default: 'false'
+        default: 'none'
         type: choice
-        options: ['true', 'false']
+        options: ['none', 'protocol', 'all']
 
 jobs:
   deploy:
@@ -117,20 +117,12 @@ jobs:
             tar -xzf deploy.tar.gz
             rm deploy.tar.gz
 
-            # First run init
-            if ! docker volume ls | grep -q pgdata_${{ env.ENVIRONMENT }}; then
-              echo "📦 First deploy - initializing database schema"
-              docker run --rm \
-                --network partisia_net_${{ env.ENVIRONMENT }} \
-                -e PGPASSWORD=letmein \
-                -v \$(pwd)/src/db/schema.sql:/schema.sql \
-                postgres:16.5 \
-                psql -h postgres -U indexer -d ls_indexer -f /schema.sql
-            fi
+            # Database schema is auto-initialized by Docker Compose via docker-entrypoint-initdb.d/
+            echo "🗃️ Database schema will be initialized automatically on first run"
 
-            # Reset protocol tables if requested
-            if [[ "${RESET_DB}" == "true" ]]; then
-              echo "⚠️ Resetting protocol tables for resync"
+            # Reset database tables based on mode
+            if [[ "${RESET_DB}" == "protocol" ]]; then
+              echo "⚠️ Resetting protocol tables for resync (keeping prices)"
               docker exec -i \$(docker compose -f docker-compose.${{ env.ENVIRONMENT }}.yaml ps -q postgres) \
                 psql -U indexer -d ls_indexer <<SQL
           TRUNCATE contract_states RESTART IDENTITY CASCADE;
@@ -138,6 +130,18 @@ jobs:
           TRUNCATE transactions RESTART IDENTITY CASCADE;
           TRUNCATE protocol_rewards RESTART IDENTITY CASCADE;
           TRUNCATE users RESTART IDENTITY CASCADE;
+          SQL
+            elif [[ "${RESET_DB}" == "all" ]]; then
+              echo "💥 Flushing ALL database tables (complete reset)"
+              docker exec -i \$(docker compose -f docker-compose.${{ env.ENVIRONMENT }}.yaml ps -q postgres) \
+                psql -U indexer -d ls_indexer <<SQL
+          TRUNCATE contract_states RESTART IDENTITY CASCADE;
+          TRUNCATE current_state RESTART IDENTITY CASCADE;
+          TRUNCATE transactions RESTART IDENTITY CASCADE;
+          TRUNCATE protocol_rewards RESTART IDENTITY CASCADE;
+          TRUNCATE users RESTART IDENTITY CASCADE;
+          TRUNCATE price_history RESTART IDENTITY CASCADE;
+          TRUNCATE mpc_prices RESTART IDENTITY CASCADE;
           SQL
             fi
 

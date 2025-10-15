@@ -50,7 +50,7 @@ const RATE_LIMIT = 100; // requests per minute
 const WINDOW_MS = 60 * 1000;
 
 app.use((req, res, next) => {
-  const key = req.ip;
+  const key = req.ip || 'unknown';
   const now = Date.now();
 
   if (!rateLimit.has(key)) {
@@ -263,7 +263,7 @@ ORDER BY timestamp ASC
     const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
     const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
 
-    const findAtOrBefore = (targetTime) => {
+    const findAtOrBefore = (targetTime: Date) => {
       let candidate = points[0];
       for (const p of points) {
         const t = new Date(p.timestamp);
@@ -280,7 +280,7 @@ ORDER BY timestamp ASC
     const weekPoint = findAtOrBefore(sevenDaysAgo);
     const monthPoint = findAtOrBefore(thirtyDaysAgo);
 
-    const calculateAPY = (oldPoint, newPoint) => {
+    const calculateAPY = (oldPoint: any, newPoint: any) => {
       const timeDiff = (new Date(newPoint.timestamp).getTime() - new Date(oldPoint.timestamp).getTime()) / (1000 * 60 * 60 * 24);
       if (timeDiff <= 0) return null;
 
