@@ -124,7 +124,7 @@ export function useStakingData(
       })) as ExchangeRateData[]
 
       // Fetch price data from MEXC historical endpoint
-      const priceRes = await fetch(`${API_BASE_URL}/mpc/prices?hours=${hours}`)
+      const priceRes = await fetch(`${API_BASE_URL}/api/mpc/prices?hours=${hours}`)
       if (!priceRes.ok) {
         throw new Error('Failed to fetch price data')
       }
