@@ -21,6 +21,7 @@ const poolConfig: PoolConfig = {
 };
 
 const pool = new Pool(poolConfig);
+let poolClosed = false;
 
 // Handle pool errors to prevent crashes
 pool.on('error', (err) => {
@@ -29,8 +30,11 @@ pool.on('error', (err) => {
 
 // Graceful shutdown handler
 process.on('SIGTERM', async () => {
-  console.log('Closing database pool...');
-  await pool.end();
+  if (!poolClosed) {
+    console.log('Closing database pool...');
+    poolClosed = true;
+    await pool.end();
+  }
 });
 
 interface TransactionData {
@@ -116,7 +120,10 @@ const client: DatabaseClient = {
   },
 
   async close(): Promise<void> {
-    await pool.end();
+    if (!poolClosed) {
+      poolClosed = true;
+      await pool.end();
+    }
   }
 };
 
