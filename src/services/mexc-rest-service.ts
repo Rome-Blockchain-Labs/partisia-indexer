@@ -104,11 +104,11 @@ class MEXCRestService {
       for (const kline of klines) {
         const ohlcData: OHLCData = {
           timestamp: new Date(kline[0]), // openTime
-          open: parseFloat(kline[1]),
-          high: parseFloat(kline[2]),
-          low: parseFloat(kline[3]),
-          close: parseFloat(kline[4]),
-          volume: parseFloat(kline[7]) // quoteAssetVolume (USDT volume)
+          open: parseFloat(kline[1].toString()),
+          high: parseFloat(kline[2].toString()),
+          low: parseFloat(kline[3].toString()),
+          close: parseFloat(kline[4].toString()),
+          volume: parseFloat(kline[7].toString()) // quoteAssetVolume (USDT volume)
         };
 
         console.log(`💾 Saving OHLC data for ${ohlcData.timestamp.toISOString()}: $${ohlcData.close}`);
@@ -119,7 +119,7 @@ class MEXCRestService {
 
     } catch (error) {
       console.error('❌ Failed to sync MEXC historical data:', error);
-      console.error('Error details:', error.stack);
+      console.error('Error details:', error instanceof Error ? error.stack : error);
     }
   }
 

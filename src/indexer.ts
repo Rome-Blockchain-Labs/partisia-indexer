@@ -72,24 +72,22 @@ class PartisiaIndexer {
       (_, i) => nextBlock + i
     );
 
-    console.log(`🔄 Processing batch: ${nextBlock}-${batchEnd} (${batchBlocks.length} blocks)`);
+    console.log(`Processing batch: blocks ${nextBlock}-${batchEnd} (${batchBlocks.length} blocks)`);
 
     const results = await this.processBlocksConcurrently(batchBlocks);
 
     const successCount = results.filter(r => r.success).length;
     const failedBlocks = results.filter(r => !r.success).map(r => r.block);
 
-    console.log(`✅ Batch complete: ${successCount}/${batchBlocks.length} successful`);
-
     if (failedBlocks.length > 0) {
-      console.warn(`⚠️  Failed blocks: ${failedBlocks.join(', ')}`);
+      console.error(`Failed blocks: [${failedBlocks.join(', ')}]`);
       await this.retryFailedBlocks(failedBlocks);
     }
 
+    // Update last indexed block regardless of activity
     this.lastIndexedBlock = batchEnd;
     this.stats.batchesProcessed++;
-    this.stats.blocksProcessed += successCount;
-    this.stats.failedBlocks += failedBlocks.length;
+    this.stats.blocksProcessed += (batchEnd - nextBlock + 1);
 
     const progress = ((this.lastIndexedBlock - config.blockchain.deploymentBlock) /
                      (this.currentBlockHeight - config.blockchain.deploymentBlock) * 100);
@@ -97,7 +95,7 @@ class PartisiaIndexer {
     const blocksPerSecond = this.stats.blocksProcessed / ((Date.now() - this.stats.startTime) / 1000);
     const eta = (this.currentBlockHeight - this.lastIndexedBlock) / blocksPerSecond;
 
-    console.log(`📈 Progress: ${progress.toFixed(1)}% | ${blocksPerSecond.toFixed(1)} blocks/sec | ETA: ${Math.round(eta/60)}min`);
+    console.log(`Indexer progress: ${progress.toFixed(1)}% complete, block ${this.lastIndexedBlock}/${this.currentBlockHeight}, rate: ${blocksPerSecond.toFixed(1)} blocks/s, ETA: ${Math.round(eta/60)}min`);
   }
 
 
@@ -200,8 +198,8 @@ class PartisiaIndexer {
     );
 
     const timestamp = blockResponse.account?.latestStorageFeeTime
-      ? new Date(parseInt(blockResponse.account.latestStorageFeeTime))
-      : new Date(blockResponse.timestamp);
+      ? new Date(blockResponse.account.latestStorageFeeTime)
+      : new Date();
 
     const stakeAmount = BigInt(state.totalPoolStakeToken?.toString() || '0');
     const liquidAmount = BigInt(state.totalPoolLiquid?.toString() || '0');
@@ -262,19 +260,20 @@ class PartisiaIndexer {
     if (lastStateResult.rows.length > 0) {
       const lastState = lastStateResult.rows[0];
       const lastStateValues = {
-        exchangeRate: lastState.exchange_rate,
+        exchangeRate: lastState.exchange_rate.toString(),
         totalPoolStakeToken: lastState.total_pool_stake_token,
         totalPoolLiquid: lastState.total_pool_liquid,
         stakeTokenBalance: lastState.stake_token_balance,
         buyInPercentage: lastState.buy_in_percentage,
-        buyInEnabled: lastState.buy_in_enabled
+        buyInEnabled: !!lastState.buy_in_enabled
       };
 
-      // Compare all key state values
+      // Compare all key state values - return true if ANY value differs
       shouldStore = Object.keys(currentStateValues).some(key =>
         currentStateValues[key as keyof typeof currentStateValues] !==
         lastStateValues[key as keyof typeof lastStateValues]
       );
+
     }
 
     // Only store if state has changed or it's the first state
@@ -301,9 +300,9 @@ class PartisiaIndexer {
         state.buyInEnabled || false
       ]);
 
-      console.log(`💾 State changed at block ${blockNumber}, storing new state`);
+      // Contract state updated at block ${blockNumber}
     } else {
-      console.log(`⏭️  State unchanged at block ${blockNumber}, skipping storage`);
+      // State unchanged at block ${blockNumber}, skipping duplicate storage
     }
 
     // Store sparse data only when present/changed
@@ -481,7 +480,7 @@ class PartisiaIndexer {
     if (!state.liquidTokenState?.balances) return;
 
     const timestamp = rawState.account?.latestStorageFeeTime
-      ? new Date(parseInt(rawState.account.latestStorageFeeTime))
+      ? new Date(rawState.account.latestStorageFeeTime)
       : new Date();
 
     // Batch insert for better performance
@@ -553,7 +552,19 @@ class PartisiaIndexer {
       return null;
     }
 
-    const blockResponse = response.data as BlockResponse;
+    const rawData = response.data;
+
+    // Convert string timestamps to numbers for consistent internal usage
+    const blockResponse: BlockResponse = {
+      ...rawData,
+      timestamp: rawData.timestamp ? parseInt(rawData.timestamp) : Date.now(),
+      account: rawData.account ? {
+        ...rawData.account,
+        latestStorageFeeTime: rawData.account.latestStorageFeeTime
+          ? parseInt(rawData.account.latestStorageFeeTime)
+          : undefined
+      } : undefined
+    };
 
     if (blockResponse.contractState && !validateContractState(blockResponse.contractState)) {
       console.warn(`⚠️  Invalid contract state at block ${blockNumber}, skipping`);
@@ -649,7 +660,7 @@ class PartisiaIndexer {
   private async processBlockTransactions(blockNumber: number, blockTimestamp: Date): Promise<void> {
     try {
       // Fetch block data with transactions
-      const blockUrl = `${config.blockchain.apiUrl}/shards/${config.blockchain.shard}/blocks/${blockNumber}`;
+      const blockUrl = `${config.blockchain.apiUrl}/chain/shards/${config.blockchain.shard}/blocks?blockTime=${blockNumber}`;
       const response = await axios.get(blockUrl, { timeout: 10000 });
 
       if (!response.data || !response.data.transactions) {

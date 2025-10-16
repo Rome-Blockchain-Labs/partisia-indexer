@@ -38,11 +38,11 @@ export interface ContractState {
 
 export interface BlockResponse {
   blockNumber: number;
-  timestamp: string;
+  timestamp: number;
   serializedContract?: string;
   contractState?: RawContractState;
   account?: {
-    latestStorageFeeTime?: string;
+    latestStorageFeeTime?: number;
   };
 }
 
@@ -58,7 +58,7 @@ export interface BuyInToken {
   buyInTime: string;
 }
 
-export function parseContractState(blockNumber: number, timestamp: string, raw: RawContractState): ContractState {
+export function parseContractState(blockNumber: number, timestamp: number, raw: RawContractState): ContractState {
   return {
     blockNumber: BigInt(blockNumber),
     timestamp: new Date(timestamp),
