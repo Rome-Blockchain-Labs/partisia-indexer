@@ -5,7 +5,9 @@
     "dev": "bun run src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "api": "bun run src/api/endpoints.ts"
+    "api": "bun run src/api/endpoints.ts",
+    "db:migrate": "bash scripts/deploy-schema.sh",
+    "deploy": "npm run build && npm run db:migrate && npm run start"
   },
   "dependencies": {
     "@partisiablockchain/abi-client": "^5.255.0",
