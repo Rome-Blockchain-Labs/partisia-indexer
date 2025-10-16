@@ -238,31 +238,79 @@ class PartisiaIndexer {
       }
     }
 
-    // Store core contract state (always store)
-    await db.query(`
-      INSERT INTO contract_states (
-        block_number, timestamp, exchange_rate,
-        total_pool_stake_token, total_pool_liquid, stake_token_balance,
-        buy_in_percentage, buy_in_enabled
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-      ON CONFLICT (block_number) DO UPDATE SET
-        timestamp = EXCLUDED.timestamp,
-        exchange_rate = EXCLUDED.exchange_rate,
-        total_pool_stake_token = EXCLUDED.total_pool_stake_token,
-        total_pool_liquid = EXCLUDED.total_pool_liquid,
-        stake_token_balance = EXCLUDED.stake_token_balance,
-        buy_in_percentage = EXCLUDED.buy_in_percentage,
-        buy_in_enabled = EXCLUDED.buy_in_enabled
-    `, [
-      blockNumber, timestamp, exchangeRate,
-      stakeAmount.toString(), liquidAmount.toString(),
-      state.stakeTokenBalance?.toString() || '0',
-      state.buyInPercentage?.toString() || '0',
-      state.buyInEnabled || false
-    ]);
+    // Check if state has changed from previous block to avoid duplication
+    const currentStateValues = {
+      exchangeRate: exchangeRate.toString(),
+      totalPoolStakeToken: stakeAmount.toString(),
+      totalPoolLiquid: liquidAmount.toString(),
+      stakeTokenBalance: state.stakeTokenBalance?.toString() || '0',
+      buyInPercentage: (state.buyInPercentage || 0).toString(),
+      buyInEnabled: !!state.buyInEnabled
+    };
+
+    // Get the latest state to compare
+    const lastStateResult = await db.query(`
+      SELECT exchange_rate, total_pool_stake_token, total_pool_liquid,
+             stake_token_balance, buy_in_percentage, buy_in_enabled
+      FROM contract_states
+      WHERE block_number < $1
+      ORDER BY block_number DESC
+      LIMIT 1
+    `, [blockNumber]);
+
+    let shouldStore = true;
+    if (lastStateResult.rows.length > 0) {
+      const lastState = lastStateResult.rows[0];
+      const lastStateValues = {
+        exchangeRate: lastState.exchange_rate,
+        totalPoolStakeToken: lastState.total_pool_stake_token,
+        totalPoolLiquid: lastState.total_pool_liquid,
+        stakeTokenBalance: lastState.stake_token_balance,
+        buyInPercentage: lastState.buy_in_percentage,
+        buyInEnabled: lastState.buy_in_enabled
+      };
+
+      // Compare all key state values
+      shouldStore = Object.keys(currentStateValues).some(key =>
+        currentStateValues[key as keyof typeof currentStateValues] !==
+        lastStateValues[key as keyof typeof lastStateValues]
+      );
+    }
+
+    // Only store if state has changed or it's the first state
+    if (shouldStore) {
+      await db.query(`
+        INSERT INTO contract_states (
+          block_number, timestamp, exchange_rate,
+          total_pool_stake_token, total_pool_liquid, stake_token_balance,
+          buy_in_percentage, buy_in_enabled
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        ON CONFLICT (block_number) DO UPDATE SET
+          timestamp = EXCLUDED.timestamp,
+          exchange_rate = EXCLUDED.exchange_rate,
+          total_pool_stake_token = EXCLUDED.total_pool_stake_token,
+          total_pool_liquid = EXCLUDED.total_pool_liquid,
+          stake_token_balance = EXCLUDED.stake_token_balance,
+          buy_in_percentage = EXCLUDED.buy_in_percentage,
+          buy_in_enabled = EXCLUDED.buy_in_enabled
+      `, [
+        blockNumber, timestamp, exchangeRate,
+        stakeAmount.toString(), liquidAmount.toString(),
+        state.stakeTokenBalance?.toString() || '0',
+        state.buyInPercentage?.toString() || '0',
+        state.buyInEnabled || false
+      ]);
+
+      console.log(`💾 State changed at block ${blockNumber}, storing new state`);
+    } else {
+      console.log(`⏭️  State unchanged at block ${blockNumber}, skipping storage`);
+    }
 
     // Store sparse data only when present/changed
     await this.storeSparseData(blockNumber, state, pendingUnlocksCount, buyInTokensCount, totalPendingUnlockAmount);
+
+    // Process transactions for this block
+    await this.processBlockTransactions(blockNumber, timestamp);
 
     // Update current state for recent blocks
     if (blockNumber >= this.lastIndexedBlock - 100) {
@@ -595,6 +643,103 @@ class PartisiaIndexer {
         retryAttempts: this.retryAttempts
       }
     };
+  }
+
+  // Process transactions for admin calls and rewards
+  private async processBlockTransactions(blockNumber: number, blockTimestamp: Date): Promise<void> {
+    try {
+      // Fetch block data with transactions
+      const blockUrl = `${config.blockchain.apiUrl}/shards/${config.blockchain.shard}/blocks/${blockNumber}`;
+      const response = await axios.get(blockUrl, { timeout: 10000 });
+
+      if (!response.data || !response.data.transactions) {
+        return; // No transactions in this block
+      }
+
+      const transactions = response.data.transactions;
+
+      for (const tx of transactions) {
+        // Only process transactions to our liquid staking contract
+        if (tx.to !== this.liquidStakingContract) {
+          continue;
+        }
+
+        await this.processTransaction(tx, blockNumber, blockTimestamp);
+      }
+
+    } catch (error: any) {
+      console.warn(`Warning: Could not process transactions for block ${blockNumber}: ${error.message}`);
+    }
+  }
+
+  // Process individual transaction and identify admin calls
+  private async processTransaction(tx: any, blockNumber: number, blockTimestamp: Date): Promise<void> {
+    try {
+      const action = this.identifyTransactionAction(tx);
+
+      if (!action) {
+        return; // Skip unknown transaction types
+      }
+
+      // Store transaction in database
+      await db.query(`
+        INSERT INTO transactions (tx_hash, block_number, timestamp, action, sender, amount, metadata)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (tx_hash) DO NOTHING
+      `, [
+        tx.hash || tx.transactionHash,
+        blockNumber,
+        blockTimestamp,
+        action,
+        tx.from || tx.sender,
+        tx.amount || '0',
+        JSON.stringify({
+          gasUsed: tx.gasUsed,
+          gasPrice: tx.gasPrice,
+          data: tx.data,
+          status: tx.status
+        })
+      ]);
+
+      console.log(`📝 Stored ${action} transaction: ${tx.hash || tx.transactionHash}`);
+
+    } catch (error: any) {
+      console.warn(`Warning: Could not process transaction ${tx.hash}: ${error.message}`);
+    }
+  }
+
+  // Identify transaction type based on call data
+  private identifyTransactionAction(tx: any): string | null {
+    try {
+      const data = tx.data || tx.input;
+
+      if (!data || data.length < 2) {
+        return null;
+      }
+
+      // Remove '0x' prefix if present
+      const cleanData = data.startsWith('0x') ? data.slice(2) : data;
+
+      // Check function signatures (first 2 bytes of call data)
+      const functionSig = cleanData.substring(0, 2);
+
+      switch (functionSig) {
+        case '12': // accrueRewards function signature
+          return 'accrueRewards';
+        case '10': // stake function
+          return 'stake';
+        case '11': // unstake function
+          return 'unstake';
+        case '13': // redeem function
+          return 'redeem';
+        case '14': // buyIn function
+          return 'buyIn';
+        default:
+          return 'unknown';
+      }
+    } catch (error) {
+      return null;
+    }
   }
 
   async getCurrentBlock(): Promise<number | null> {

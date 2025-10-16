@@ -119,6 +119,26 @@ LIMIT $2
   }
 });
 
+// Debug endpoint to check all transactions
+app.get('/transactions', async (req, res) => {
+  try {
+    const result = await db.query(`
+      SELECT tx_hash, block_number, action, sender, amount, timestamp
+      FROM transactions
+      ORDER BY block_number DESC
+      LIMIT 50
+    `);
+
+    res.json({
+      count: result.rowCount || 0,
+      transactions: result.rows
+    });
+  } catch (error) {
+    console.error('Error fetching transactions:', error);
+    res.status(500).json({ error: 'Failed to fetch transactions' });
+  }
+});
+
 app.get('/accrueRewards', async (req, res) => {
   try {
     // Get accrue reward transactions from the transactions table

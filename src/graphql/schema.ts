@@ -6,6 +6,8 @@ export const schema = createSchema({
     type Query {
       contractStates(first: Int = 100, skip: Int = 0, orderBy: OrderBy = BLOCK_DESC, where: StateFilter): [ContractState!]!
       users(first: Int = 100, skip: Int = 0, orderBy: UserOrderBy = BALANCE_DESC): [User!]!
+      transactions(first: Int = 100, skip: Int = 0, orderBy: TransactionOrderBy = BLOCK_DESC, where: TransactionFilter): [Transaction!]!
+      rewards(first: Int = 100, skip: Int = 0, orderBy: TransactionOrderBy = BLOCK_DESC): [Transaction!]!
       currentState: CurrentState!
       exchangeRate: ExchangeRate!
       priceHistory(hours: Int = 24): [Price!]!
@@ -25,6 +27,16 @@ export const schema = createSchema({
       balance: String!
       firstSeen: String!
       lastSeen: String!
+    }
+
+    type Transaction {
+      txHash: String!
+      blockNumber: String!
+      timestamp: String!
+      action: String!
+      sender: String!
+      amount: String!
+      metadata: String
     }
     
     type CurrentState {
@@ -57,6 +69,15 @@ export const schema = createSchema({
       timestamp_after: String
       timestamp_before: String
     }
+
+    input TransactionFilter {
+      action: String
+      sender: String
+      blockNumber_gte: Int
+      blockNumber_lte: Int
+      timestamp_after: String
+      timestamp_before: String
+    }
     
     enum OrderBy {
       BLOCK_DESC
@@ -72,6 +93,13 @@ export const schema = createSchema({
       BALANCE_ASC
       FIRST_SEEN_DESC
       FIRST_SEEN_ASC
+    }
+
+    enum TransactionOrderBy {
+      BLOCK_DESC
+      BLOCK_ASC
+      TIMESTAMP_DESC
+      TIMESTAMP_ASC
     }
   `,
   
@@ -150,7 +178,82 @@ export const schema = createSchema({
           lastSeen: r.last_seen ? new Date(r.last_seen).toISOString() : new Date().toISOString()
         }))
       },
-      
+
+      transactions: async (_: any, { first, skip, orderBy, where }: any) => {
+        let query = 'SELECT * FROM transactions WHERE 1=1'
+        const params = []
+
+        if (where) {
+          if (where.action) {
+            params.push(where.action)
+            query += ` AND action = $${params.length}`
+          }
+          if (where.sender) {
+            params.push(where.sender)
+            query += ` AND sender = $${params.length}`
+          }
+          if (where.blockNumber_gte) {
+            params.push(where.blockNumber_gte)
+            query += ` AND block_number >= $${params.length}`
+          }
+          if (where.blockNumber_lte) {
+            params.push(where.blockNumber_lte)
+            query += ` AND block_number <= $${params.length}`
+          }
+          if (where.timestamp_after) {
+            params.push(where.timestamp_after)
+            query += ` AND timestamp > $${params.length}`
+          }
+          if (where.timestamp_before) {
+            params.push(where.timestamp_before)
+            query += ` AND timestamp < $${params.length}`
+          }
+        }
+
+        const orderMap = {
+          BLOCK_DESC: 'block_number DESC',
+          BLOCK_ASC: 'block_number ASC',
+          TIMESTAMP_DESC: 'timestamp DESC',
+          TIMESTAMP_ASC: 'timestamp ASC'
+        }
+
+        query += ` ORDER BY ${orderMap[orderBy as keyof typeof orderMap]}`
+        query += ` LIMIT ${first} OFFSET ${skip}`
+
+        const result = await db.query(query, params)
+        return result.rows.map(r => ({
+          txHash: r.tx_hash,
+          blockNumber: r.block_number.toString(),
+          timestamp: r.timestamp.toISOString(),
+          action: r.action,
+          sender: r.sender,
+          amount: r.amount,
+          metadata: r.metadata ? JSON.stringify(r.metadata) : null
+        }))
+      },
+
+      rewards: async (_: any, { first, skip, orderBy }: any) => {
+        const orderMap = {
+          BLOCK_DESC: 'block_number DESC',
+          BLOCK_ASC: 'block_number ASC',
+          TIMESTAMP_DESC: 'timestamp DESC',
+          TIMESTAMP_ASC: 'timestamp ASC'
+        }
+
+        const query = `SELECT * FROM transactions WHERE action = 'accrueRewards' ORDER BY ${orderMap[orderBy as keyof typeof orderMap]} LIMIT $1 OFFSET $2`
+
+        const result = await db.query(query, [first, skip])
+        return result.rows.map(r => ({
+          txHash: r.tx_hash,
+          blockNumber: r.block_number.toString(),
+          timestamp: r.timestamp.toISOString(),
+          action: r.action,
+          sender: r.sender,
+          amount: r.amount,
+          metadata: r.metadata ? JSON.stringify(r.metadata) : null
+        }))
+      },
+
       currentState: async () => {
         const [state, price] = await Promise.all([
           db.query('SELECT * FROM current_state WHERE id = 1'),

@@ -69,13 +69,26 @@ class MEXCRestService {
         ? new Date(lastTimestamp).getTime() + 24 * 60 * 60 * 1000 // Start from next day
         : config.blockchain.deploymentTimestamp.getTime(); // Start from contract deployment
 
+      const now = Date.now();
+
+      // Don't fetch future data
+      if (startTime >= now) {
+        console.log('📊 Already up to date with MEXC price data');
+        return;
+      }
+
+      const url = `${this.baseUrl}/klines?symbol=${this.symbol}&interval=1d&startTime=${startTime}&limit=1000`;
+      console.log(`🔍 Fetching MEXC data from: ${new Date(startTime).toISOString()}`);
+      console.log(`🔗 URL: ${url}`);
+
       // Fetch daily klines from MEXC
-      const response = await fetch(
-        `${this.baseUrl}/klines?symbol=${this.symbol}&interval=1d&startTime=${startTime}&limit=1000`
-      );
+      const response = await fetch(url);
+
+      console.log(`📡 MEXC API Response: ${response.status} ${response.statusText}`);
 
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        const errorText = await response.text();
+        throw new Error(`HTTP ${response.status}: ${response.statusText} - ${errorText}`);
       }
 
       const klines: number[][] = await response.json();
@@ -91,20 +104,22 @@ class MEXCRestService {
       for (const kline of klines) {
         const ohlcData: OHLCData = {
           timestamp: new Date(kline[0]), // openTime
-          open: kline[1],
-          high: kline[2],
-          low: kline[3],
-          close: kline[4],
-          volume: kline[7] // quoteAssetVolume (USDT volume)
+          open: parseFloat(kline[1]),
+          high: parseFloat(kline[2]),
+          low: parseFloat(kline[3]),
+          close: parseFloat(kline[4]),
+          volume: parseFloat(kline[7]) // quoteAssetVolume (USDT volume)
         };
 
+        console.log(`💾 Saving OHLC data for ${ohlcData.timestamp.toISOString()}: $${ohlcData.close}`);
         await this.saveOHLCData(ohlcData);
       }
 
       console.log(`✅ MEXC price sync complete: ${klines.length} records`);
 
     } catch (error) {
-      console.error('Failed to sync MEXC historical data:', error);
+      console.error('❌ Failed to sync MEXC historical data:', error);
+      console.error('Error details:', error.stack);
     }
   }
 

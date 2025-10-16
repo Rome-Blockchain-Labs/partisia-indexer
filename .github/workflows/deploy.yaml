@@ -78,7 +78,7 @@ jobs:
               environment:
                 - NODE_ENV=production
                 - API_PORT=3002
-                - PARTISIA_API_URL=http://95.216.235.72:18080
+                - PARTISIA_API_URL=http://127.0.0.1:58081
                 - LS_CONTRACT=02fc82abf81cbb36acfe196faa1ad49ddfa7abdda6
                 - PARTISIA_SHARD=Shard2
                 - DEPLOYMENT_BLOCK=10682802
