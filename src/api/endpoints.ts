@@ -1,4 +1,5 @@
 import express from 'express';
+import path from 'path';
 import config from '../config';
 import { createYoga } from 'graphql-yoga'
 import { schema } from '../graphql/schema'
@@ -77,7 +78,7 @@ function handleError(error: unknown, res: express.Response, context: string): vo
 
 // API-only server - no frontend serving
 
-app.get('/exchangeRates', async (req, res) => {
+app.get('/api/exchangeRates', async (req, res) => {
   try {
     const hours = validateNumericInput(req.query.hours as string, 1, 8760, 24); // 1 hour to 1 year
 
@@ -120,7 +121,7 @@ LIMIT $2
 });
 
 // Debug endpoint to check all transactions
-app.get('/transactions', async (req, res) => {
+app.get('/api/transactions', async (req, res) => {
   try {
     const result = await db.query(`
       SELECT tx_hash, block_number, action, sender, amount, timestamp
@@ -139,7 +140,7 @@ app.get('/transactions', async (req, res) => {
   }
 });
 
-app.get('/accrueRewards', async (req, res) => {
+app.get('/api/accrueRewards', async (req, res) => {
   try {
     // Get accrue reward transactions from the transactions table
     const result = await db.query(`
@@ -165,7 +166,7 @@ app.get('/accrueRewards', async (req, res) => {
   }
 });
 
-app.get('/daily', async (req, res) => {
+app.get('/api/daily', async (req, res) => {
   try {
     const days = validateNumericInput(req.query.days as string, 1, 365, 30); // 1 day to 1 year
     const result = await db.query(`
@@ -189,7 +190,7 @@ ORDER BY date DESC
   }
 });
 
-app.get('/stats', async (req, res) => {
+app.get('/api/stats', async (req, res) => {
   try {
     const [current, deployment, userCount] = await Promise.all([
       db.query('SELECT * FROM current_state WHERE id = 1'),
@@ -221,7 +222,7 @@ app.get('/stats', async (req, res) => {
   }
 });
 
-app.get('/apy', async (req, res) => {
+app.get('/api/apy', async (req, res) => {
   try {
     // Check if indexer sync is complete first
     const indexer = require('../indexer').default;
@@ -302,57 +303,36 @@ ORDER BY timestamp ASC
 });
 
 // Debug endpoint
-app.get('/mpc/test', (req, res) => {
+app.get('/api/mpc/test', (req, res) => {
   res.json({ message: 'Updated API working', timestamp: new Date().toISOString() });
 });
 
-app.get('/mpc/prices', async (req, res) => {
+app.get('/api/mpc/prices', async (req, res) => {
   try {
     const hours = validateNumericInput(req.query.hours as string, 1, 8760, 24);
     const result = await db.query(`
-SELECT
-  block_number,
-  exchange_rate,
-  timestamp
-FROM contract_states
-WHERE timestamp >= NOW() - INTERVAL '1 hour' * $1
-ORDER BY timestamp DESC
-LIMIT 1000
-`, [hours]);
+      SELECT timestamp, price_usd, market_cap_usd, volume_24h_usd
+      FROM price_history
+      WHERE timestamp >= NOW() - INTERVAL '1 hour' * $1
+      ORDER BY timestamp DESC
+      LIMIT 1000
+    `, [hours]);
 
-    // Fetch real blockchain timestamps using productionTime
-    const priceData = [];
-    for (const row of result.rows) {
-      try {
-        const blockResponse = await fetch(`${config.blockchain.apiUrl}/shards/${config.blockchain.shard}/blocks?blockTime=${row.block_number}`);
-        if (blockResponse.ok) {
-          const blockData = await blockResponse.json();
-          priceData.push({
-            time: new Date(blockData.productionTime).toISOString(),
-            price: row.exchange_rate,
-            market_cap: null,
-            volume: null
-          });
-        }
-      } catch (e) {
-        // Fallback to database timestamp if blockchain API fails
-        priceData.push({
-          time: new Date(row.timestamp).toISOString(),
-          price: row.exchange_rate,
-          market_cap: null,
-          volume: null
-        });
-      }
-    }
+    const priceData = result.rows.map(row => ({
+      timestamp: row.timestamp.toISOString(),
+      price_usd: parseFloat(row.price_usd),
+      market_cap_usd: row.market_cap_usd ? parseFloat(row.market_cap_usd) : null,
+      volume_24h_usd: row.volume_24h_usd ? parseFloat(row.volume_24h_usd) : null
+    }));
 
     res.json(priceData);
   } catch (error) {
-    console.error('Error fetching exchange rate data:', error);
-    res.status(500).json({ error: 'Failed to fetch exchange rates' });
+    console.error('Error fetching price data:', error);
+    res.status(500).json({ error: 'Failed to fetch price data' });
   }
 });
 
-app.get('/mpc/current', async (req, res) => {
+app.get('/api/mpc/current', async (req, res) => {
   try {
     const result = await db.query(`
 SELECT timestamp, price_usd, market_cap_usd, volume_24h_usd
@@ -372,7 +352,7 @@ LIMIT 1
   }
 });
 
-app.get('/stats/combined', async (req, res) => {
+app.get('/api/stats/combined', async (req, res) => {
   try {
     const [current, mpcPrice] = await Promise.all([
       db.query('SELECT * FROM current_state WHERE id = 1'),
@@ -405,7 +385,7 @@ app.get('/stats/combined', async (req, res) => {
   }
 });
 
-app.get('/users', async (req, res) => {
+app.get('/api/users', async (req, res) => {
   try {
     const result = await db.query(`
 SELECT address, balance, first_seen, last_seen
@@ -428,6 +408,10 @@ const yoga = createYoga({
 
 app.use('/graphql', yoga)
 
+// Serve frontend static files
+const frontendBuildPath = path.join(__dirname, '../../example-graph/build');
+console.log(`✅ Serving frontend from ${frontendBuildPath}`);
+app.use(express.static(frontendBuildPath));
 
 app.get('/health', async (req, res) => {
   try {
@@ -466,7 +450,7 @@ app.get('/status', async (req, res) => {
 });
 
 // Simple stats endpoint
-app.get('/stats', async (req, res) => {
+app.get('/api/status', async (req, res) => {
   try {
     const indexer = require('../indexer').default;
     const stats = await indexer.getStats();
@@ -504,56 +488,27 @@ app.get('/api', (req, res) => {
 });
 
 
-// Stats endpoint
-app.get('/stats', async (req, res) => {
-  try {
-    const result = await db.query(`
-      SELECT
-        COUNT(*) as total_blocks,
-        MIN(block_number) as earliest_block,
-        MAX(block_number) as latest_block,
-        AVG(exchange_rate) as avg_exchange_rate,
-        MAX(exchange_rate) as max_exchange_rate,
-        MIN(exchange_rate) as min_exchange_rate,
-        MAX(total_pool_stake_token) as total_staked,
-        MAX(timestamp) as last_updated
-      FROM contract_states
-    `);
 
-    const stats = result.rows[0];
-    const currentPrice = 0.01562;
-    const totalStaked = parseInt(stats.total_staked || '0');
-
-    res.json({
-      totalBlocks: parseInt(stats.total_blocks),
-      latestBlock: parseInt(stats.latest_block),
-      earliestBlock: parseInt(stats.earliest_block),
-      avgExchangeRate: parseFloat(stats.avg_exchange_rate || '1'),
-      maxExchangeRate: parseFloat(stats.max_exchange_rate || '1'),
-      minExchangeRate: parseFloat(stats.min_exchange_rate || '1'),
-      totalStaked: stats.total_staked,
-      tvlUSD: (totalStaked / 1e6) * currentPrice,
-      currentPrice: currentPrice,
-      lastUpdated: stats.last_updated
-    });
-  } catch (error) {
-    console.error('Error fetching stats:', error);
-    res.status(500).json({ error: 'Failed to fetch stats' });
-  }
-});
-
-// Root endpoint - API info
+// Root endpoint - Smart routing (SPA + API)
 app.get('/', (req, res) => {
-  res.json({
-    message: 'Partisia Blockchain Indexer API',
-    endpoints: {
-      graphql: '/graphql',
-      api_info: '/api',
-      status: '/status',
-      stats: '/stats'
-    },
-    note: 'API-only deployment. Use GraphQL endpoint for subgraph queries.'
-  });
+  // Check if request accepts HTML (browser request)
+  if (req.headers.accept && req.headers.accept.includes('text/html')) {
+    // Serve the frontend app
+    res.sendFile(path.join(frontendBuildPath, 'index.html'));
+  } else {
+    // Return API info for JSON requests
+    res.json({
+      message: 'Partisia Blockchain Indexer API',
+      endpoints: {
+        frontend: '/ (React dashboard)',
+        graphql: '/graphql',
+        api_info: '/api',
+        health: '/health'
+      },
+      note: 'Frontend dashboard served at root. Use GraphQL for data queries.',
+      version: '1.0.0'
+    });
+  }
 });
 
 export default app;
