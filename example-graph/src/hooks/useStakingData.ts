@@ -68,15 +68,14 @@ export function useStakingData(
     setError(null)
 
     try {
-      // Calculate hours based on time period
-      // Note: Use larger time windows since our data is from June 2025
+      // Calculate hours based on time period - now using REAL time periods
       const hoursMap = {
-        '24h': 8760, // Show historical data since there's no recent data
-        '7d': 8760,  // Show historical data since there's no recent data
-        '30d': 8760, // Show historical data since there's no recent data
-        '90d': 8760,
-        '1y': 8760,
-        'all': 100000, // Large number for "all" data
+        '24h': 24,      // Last 24 hours
+        '7d': 168,      // Last 7 days (7 * 24)
+        '30d': 720,     // Last 30 days (30 * 24)
+        '90d': 2160,    // Last 90 days (90 * 24)
+        '1y': 8760,     // Last year (365 * 24)
+        'all': 100000,  // All available data
       }
       const hours = hoursMap[timePeriod]
 
@@ -94,7 +93,7 @@ export function useStakingData(
           }
         `,
         variables: {
-          first: Math.min(hours * 10, 1000) // Estimate data points based on hours
+          first: Math.min(hours, 2000) // More realistic data points based on hours
         }
       }
 
@@ -255,8 +254,8 @@ export function useStakingData(
   useEffect(() => {
     fetchData()
 
-    // Set up auto-refresh every minute
-    const interval = setInterval(fetchData, 60000)
+    // Set up auto-refresh every 10 seconds for reactive updates
+    const interval = setInterval(fetchData, 10000)
 
     return () => clearInterval(interval)
   }, [fetchData])

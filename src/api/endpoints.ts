@@ -26,7 +26,7 @@ app.use((req, res, next) => {
 
 // Rate limiting (simple in-memory implementation)
 const rateLimit = new Map<string, { count: number; resetTime: number }>();
-const RATE_LIMIT = 100; // requests per minute
+const RATE_LIMIT = 10000; // requests per minute (increased for testing)
 const WINDOW_MS = 60 * 1000;
 
 app.use((req, res, next) => {
@@ -193,16 +193,17 @@ app.get('/api/indexing-progress', async (req, res) => {
     const currentHeight = data.blockTime;
 
     // Get transaction indexer stats
-    let txStats = {};
+    let txStats: any = {
+      transactionsProcessed: 0,
+      contractTxFound: 0,
+      adminTxFound: 0,
+      lastProcessedBlock: config.blockchain.deploymentBlock
+    };
     try {
       const transactionIndexer = require('../transactionIndexer').default;
       txStats = transactionIndexer.getStats();
     } catch (e) {
-      txStats = {
-        transactionsProcessed: 0,
-        contractTxFound: 0,
-        adminTxFound: 0
-      };
+      // Use default stats if transaction indexer is not available
     }
 
     // Calculate progress

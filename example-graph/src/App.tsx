@@ -1,5 +1,6 @@
 import React from 'react'
 import InteractiveStakingChart from './InteractiveStakingChart'
+import HistoricalExchangeRatesChart from './HistoricalExchangeRatesChart'
 import AdvancedDashboard from './AdvancedDashboard'
 import TransactionsPanel from './TransactionsPanel'
 import IndexingProgress from './IndexingProgress'
@@ -23,6 +24,9 @@ function App() {
 
           {/* Interactive Chart Component */}
           <InteractiveStakingChart />
+
+          {/* Historical Exchange Rates Chart */}
+          <HistoricalExchangeRatesChart />
 
           {/* Advanced Dashboard with Multiple Views */}
           <AdvancedDashboard />

@@ -5,18 +5,17 @@ import { BlockResponse, RawContractState, ContractState, parseContractState, val
 
 class PartisiaIndexer {
   private running = false;
-
+  private readonly usePublicApi = process.env.PARTISIA_API_URL?.includes('reader.partisiablockchain.com') || false;
   private readonly batchSize = parseInt(process.env.BATCH_SIZE || '1000');
-  private readonly concurrency = parseInt(process.env.CONCURRENCY || '50');
+  private readonly baseConcurrency = parseInt(process.env.CONCURRENCY || '50');
+  private readonly concurrency = this.usePublicApi ? Math.min(3, this.baseConcurrency) : this.baseConcurrency;
   private readonly retryAttempts = parseInt(process.env.RETRY_ATTEMPTS || '3');
   private readonly retryDelay = parseInt(process.env.RETRY_DELAY_MS || '1000');
-
   private readonly liquidStakingContract = process.env.LS_CONTRACT || '02fc82abf81cbb36acfe196faa1ad49ddfa7abdda6';
   private readonly stakingResponsible = process.env.STAKING_RESPONSIBLE || '000016e01e04096e52e0a6021e877f01760552abfb';
 
-  // Rate limiter for public API calls (max 2 queries per second)
   private lastPublicApiCall = 0;
-  private readonly publicApiRateLimit = 500; // 500ms between calls = 2 per second
+  private readonly publicApiRateLimit = 600;
 
   private currentBlockHeight = 0;
   private lastIndexedBlock = 0;
@@ -26,20 +25,22 @@ class PartisiaIndexer {
     blocksProcessed: 0,
     batchesProcessed: 0,
     failedBlocks: 0,
+    rateLimitedBlocks: 0,
     startTime: Date.now()
   };
 
-  constructor() {
-    // Use shared DB connection from db/client.ts
-  }
+  constructor() {}
 
   async start() {
     console.log('🚀 Starting Partisia Gap-Based Indexer');
     console.log(`📄 Contract: ${this.liquidStakingContract}`);
-    console.log(`🌐 API: ${config.blockchain.apiUrl}`);
+    console.log(`🌐 API: ${config.blockchain.apiUrl}${this.usePublicApi ? ' (PUBLIC - RATE LIMITED)' : ''}`);
     console.log(`⚙️  Batch Size: ${this.batchSize}`);
-    console.log(`🔄 Concurrency: ${this.concurrency}`);
+    console.log(`🔄 Concurrency: ${this.concurrency}${this.usePublicApi ? ' (reduced for public API)' : ''}`);
     console.log(`🔁 Max Retries: ${this.retryAttempts}`);
+    if (this.usePublicApi) {
+      console.log(`⏰ Rate Limit: ${(1000 / this.publicApiRateLimit).toFixed(1)} queries/second`);
+    }
 
     this.running = true;
     this.lastIndexedBlock = await this.getLastIndexedBlock();
@@ -51,7 +52,7 @@ class PartisiaIndexer {
     while (this.running) {
       try {
         await this.processBatch();
-        await this.sleep(100);
+        await this.sleep(this.usePublicApi ? 1000 : 100);
       } catch (error: any) {
         console.error('❌ Batch processing error:', error.message);
         await this.sleep(5000);
@@ -99,7 +100,8 @@ class PartisiaIndexer {
     const blocksPerSecond = this.stats.blocksProcessed / ((Date.now() - this.stats.startTime) / 1000);
     const eta = (this.currentBlockHeight - this.lastIndexedBlock) / blocksPerSecond;
 
-    console.log(`Indexer progress: ${progress.toFixed(1)}% complete, block ${this.lastIndexedBlock}/${this.currentBlockHeight}, rate: ${blocksPerSecond.toFixed(1)} blocks/s, ETA: ${Math.round(eta/60)}min`);
+    const apiInfo = this.usePublicApi ? ' [PUBLIC API]' : '';
+    console.log(`Indexer progress: ${progress.toFixed(1)}% complete, block ${this.lastIndexedBlock}/${this.currentBlockHeight}, rate: ${blocksPerSecond.toFixed(1)} blocks/s, ETA: ${Math.round(eta/60)}min${apiInfo}`);
   }
 
 
@@ -133,38 +135,51 @@ class PartisiaIndexer {
     return results;
   }
 
-  // Process single block with retry logic
   private async processBlockWithRetry(blockNumber: number): Promise<boolean> {
-    for (let attempt = 1; attempt <= this.retryAttempts; attempt++) {
+    for (let attempt = 1; attempt <= 10; attempt++) {
       try {
-        const success = await this.processBlock(blockNumber);
-        if (success) {
-          return true;
+        if (this.usePublicApi) {
+          await this.rateLimitPublicApi();
         }
 
-        // Block doesn't exist (404) - not an error, just skip
+        const success = await this.processBlock(blockNumber);
+        if (success) return true;
         return true;
       } catch (error: any) {
-        if (attempt === this.retryAttempts) {
-          console.warn(`❌ Block ${blockNumber} failed after ${this.retryAttempts} attempts: ${error.message}`);
-          return false;
+        if (error.response?.status === 429 || error.message.includes('429')) {
+          this.stats.rateLimitedBlocks++;
+          const delay = Math.min(1000 * Math.pow(1.5, attempt - 1), 30000);
+          console.warn(`⏰ Block ${blockNumber} hit rate limit (attempt ${attempt}), waiting ${delay}ms`);
+          await this.sleep(delay);
+          continue;
+        } else {
+          if (attempt >= this.retryAttempts) {
+            console.warn(`❌ Block ${blockNumber} failed after ${this.retryAttempts} attempts: ${error.message}`);
+            return false;
+          }
+          const delay = this.retryDelay * Math.pow(2, attempt - 1);
+          await this.sleep(delay);
         }
-
-        // Exponential backoff
-        const delay = this.retryDelay * Math.pow(2, attempt - 1);
-        await this.sleep(delay);
       }
     }
+
+    console.warn(`❌ Block ${blockNumber} failed after 10 rate limit attempts`);
     return false;
   }
 
-  // Retry failed blocks with exponential backoff
+  private async rateLimitPublicApi(): Promise<void> {
+    const now = Date.now();
+    const timeSinceLastCall = now - this.lastPublicApiCall;
+    if (timeSinceLastCall < this.publicApiRateLimit) {
+      await this.sleep(this.publicApiRateLimit - timeSinceLastCall);
+    }
+    this.lastPublicApiCall = Date.now();
+  }
+
   private async retryFailedBlocks(failedBlocks: number[]) {
     console.log(`🔁 Retrying ${failedBlocks.length} failed blocks...`);
-
     const retryResults = await this.processBlocksConcurrently(failedBlocks);
     const stillFailed = retryResults.filter(r => !r.success).length;
-
     if (stillFailed > 0) {
       console.warn(`⚠️  ${stillFailed} blocks still failed after retry`);
     } else {
@@ -172,23 +187,14 @@ class PartisiaIndexer {
     }
   }
 
-  // Process single block - core block handler
   private async processBlock(blockNumber: number): Promise<boolean> {
     try {
-      // Get contract state at this block
       const contractState = await this.getContractState(blockNumber);
-
-      if (!contractState) {
-        return false; // Block doesn't exist or no contract state
-      }
-
-      // Process the block data
+      if (!contractState) return false;
       await this.handleLiquidStakingState(blockNumber, contractState);
-      // await this.handleUserBalances(blockNumber, contractState); // Disabled due to serialization issues
-
       return true;
     } catch (error: any) {
-      throw error; // Let retry logic handle it
+      throw error;
     }
   }
 
@@ -209,21 +215,17 @@ class PartisiaIndexer {
     const liquidAmount = BigInt(state.totalPoolLiquid?.toString() || '0');
     const exchangeRate = liquidAmount === 0n ? 1.0 : Number(stakeAmount) / Number(liquidAmount);
 
-    // Get latest MPC price for sMPC calculation
     let mpcPrice = 0;
     try {
       const priceResult = await db.query('SELECT price_usd FROM price_history ORDER BY timestamp DESC LIMIT 1');
       mpcPrice = parseFloat(priceResult.rows[0]?.price_usd) || 0;
     } catch (e) {
-      // Use fallback price or skip sMPC calculation
       mpcPrice = 0;
     }
 
-    // Calculate total sMPC value in USD
     const smpcPrice = mpcPrice * exchangeRate;
     const totalSmpcValueUsd = (Number(liquidAmount) / 1e6) * smpcPrice;
 
-    // Calculate aggregate data from complex fields (with safe access)
     let pendingUnlocksCount = 0;
     let totalPendingUnlockAmount = '0';
 
@@ -254,9 +256,6 @@ class PartisiaIndexer {
       }
     }
 
-    // SIMPLIFIED APPROACH: Only store significant state changes
-    // Don't store every block - check if this is a meaningful change
-
     const currentState = {
       exchangeRate: parseFloat(exchangeRate.toFixed(10)),
       totalPoolStakeToken: parseInt(stakeAmount.toString()),
@@ -266,7 +265,6 @@ class PartisiaIndexer {
       buyInEnabled: !!state.buyInEnabled
     };
 
-    // Get the latest stored state for comparison
     const lastStateResult = await db.query(`
       SELECT exchange_rate, total_pool_stake_token, total_pool_liquid,
              stake_token_balance, buy_in_percentage, buy_in_enabled
@@ -275,12 +273,11 @@ class PartisiaIndexer {
       LIMIT 1
     `);
 
-    let shouldStore = lastStateResult.rows.length === 0; // Always store first state
+    let shouldStore = lastStateResult.rows.length === 0;
 
     if (lastStateResult.rows.length > 0) {
       const lastState = lastStateResult.rows[0];
 
-      // Check if any meaningful value changed
       shouldStore = (
         parseFloat(lastState.exchange_rate) !== currentState.exchangeRate ||
         parseInt(lastState.total_pool_stake_token) !== currentState.totalPoolStakeToken ||
@@ -291,13 +288,11 @@ class PartisiaIndexer {
       );
     }
 
-    // Only store if there's an actual meaningful change AND it's worth storing
-    // Skip storing too frequently - only store every 1000 blocks or significant changes
     const isSignificantChange = shouldStore && (
       currentState.stakeTokenBalance !== 0 ||
       currentState.totalPoolStakeToken !== 0 ||
       currentState.totalPoolLiquid !== 0 ||
-      blockNumber % 1000 === 0  // Store checkpoint every 1000 blocks
+      blockNumber % 1000 === 0
     );
 
     if (isSignificantChange) {
@@ -330,12 +325,7 @@ class PartisiaIndexer {
       console.log(`⏩ Skipping minor change at block ${blockNumber} (no significant change)`);
     }
 
-    // Store sparse data only when present/changed
     await this.storeSparseData(blockNumber, state, pendingUnlocksCount, buyInTokensCount, totalPendingUnlockAmount);
-
-    // Transaction processing is now handled by separate transaction indexer
-
-    // Update current state for recent blocks
     if (blockNumber >= this.lastIndexedBlock - 100) {
       await db.query(`
         INSERT INTO current_state (id, block_number, timestamp, exchange_rate,
@@ -566,12 +556,13 @@ class PartisiaIndexer {
   }
 
   private async getContractState(blockNumber: number): Promise<BlockResponse | null> {
+    if (this.usePublicApi) {
+      await this.rateLimitPublicApi();
+    }
+
     const response = await axios.get(
       `${config.blockchain.apiUrl}/chain/contracts/${this.liquidStakingContract}?blockTime=${blockNumber}`,
-      {
-        timeout: 10000,
-        validateStatus: (s) => s === 200 || s === 404
-      }
+      { timeout: 10000, validateStatus: (s) => s === 200 || s === 404 }
     );
 
     if (response.status === 404 || !response.data?.serializedContract) {
@@ -579,8 +570,6 @@ class PartisiaIndexer {
     }
 
     const rawData = response.data;
-
-    // Convert string timestamps to numbers for consistent internal usage
     const blockResponse: BlockResponse = {
       ...rawData,
       timestamp: rawData.timestamp ? parseInt(rawData.timestamp) : Date.now(),
@@ -671,8 +660,10 @@ class PartisiaIndexer {
         blocksProcessed: this.stats.blocksProcessed,
         batchesProcessed: this.stats.batchesProcessed,
         failedBlocks: this.stats.failedBlocks,
+        rateLimitedBlocks: this.stats.rateLimitedBlocks,
         blocksPerSecond: this.stats.blocksProcessed / ((Date.now() - this.stats.startTime) / 1000),
-        uptime: Math.round((Date.now() - this.stats.startTime) / 1000)
+        uptime: Math.round((Date.now() - this.stats.startTime) / 1000),
+        usingPublicApi: this.usePublicApi
       },
       config: {
         batchSize: this.batchSize,
@@ -815,18 +806,6 @@ class PartisiaIndexer {
     }
   }
 
-  // Rate limiter to avoid hitting public API limits (max 2 queries per second)
-  private async rateLimitPublicApi(): Promise<void> {
-    const now = Date.now();
-    const timeSinceLastCall = now - this.lastPublicApiCall;
-
-    if (timeSinceLastCall < this.publicApiRateLimit) {
-      const waitTime = this.publicApiRateLimit - timeSinceLastCall;
-      await this.sleep(waitTime);
-    }
-
-    this.lastPublicApiCall = Date.now();
-  }
 
   async getCurrentBlock(): Promise<number | null> {
     return this.currentBlockHeight;

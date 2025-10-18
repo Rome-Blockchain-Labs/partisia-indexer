@@ -1,8 +1,48 @@
-import React, { FC } from 'react'
-import { useRealtimeData } from './hooks/useRealtimeData'
+import React, { FC, useState, useEffect } from 'react'
+import { API_BASE_URL } from './config'
 
 const IndexingProgress: FC = () => {
-  const { data: progress, loading, error, connectionStatus, reconnect } = useRealtimeData()
+  const [progress, setProgress] = useState<any>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  const fetchProgress = async () => {
+    try {
+      // Use the proper /api/indexing-progress endpoint that provides separate indexer stats
+      const response = await fetch(`${API_BASE_URL}/api/indexing-progress`)
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+      }
+      const data = await response.json()
+
+      // Use the proper separate progress data from the API
+      const transformedData = {
+        overall: data.overall,
+        stateIndexer: data.stateIndexer,
+        transactionIndexer: data.transactionIndexer
+      }
+
+      setProgress(transformedData)
+      setError(null)
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : 'Unknown error'
+      setError(`Failed to fetch status: ${errorMsg}`)
+      console.error('Error fetching progress:', err)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    fetchProgress()
+    const interval = setInterval(fetchProgress, 5000) // Update every 5 seconds
+    return () => clearInterval(interval)
+  }, [])
+
+  const reconnect = () => {
+    setLoading(true)
+    fetchProgress()
+  }
 
   const formatNumber = (num: number) => {
     return new Intl.NumberFormat().format(num)
@@ -16,15 +56,40 @@ const IndexingProgress: FC = () => {
           <h2 className="text-xl font-bold">Indexing Progress</h2>
           <div className="flex items-center space-x-2">
             <div className="h-2 w-2 bg-yellow-400 rounded-full animate-pulse"></div>
-            <span className="text-sm text-gray-500">Connecting...</span>
+            <span className="text-sm text-gray-500">Loading...</span>
           </div>
         </div>
-        <div className="text-gray-500">Loading...</div>
+        <div className="text-gray-500">Fetching indexer status...</div>
       </div>
     )
   }
 
-  if (!progress) return null
+  if (error) {
+    return (
+      <div className="bg-red-50 rounded-lg shadow-lg p-6 mb-8">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-xl font-bold text-red-800">⚠️ Indexing Status Error</h2>
+          <button
+            onClick={reconnect}
+            className="px-3 py-1 bg-red-100 hover:bg-red-200 text-red-700 rounded text-sm"
+          >
+            Retry
+          </button>
+        </div>
+        <div className="text-red-600">
+          {error} - Using /api/status endpoint
+        </div>
+      </div>
+    )
+  }
+
+  if (!progress) {
+    return (
+      <div className="bg-gray-50 rounded-lg shadow-lg p-6 mb-8">
+        <div className="text-gray-600">No indexing progress data available</div>
+      </div>
+    )
+  }
 
   // Don't show if indexing is complete
   if (progress.overall.syncComplete) return null
@@ -37,25 +102,13 @@ const IndexingProgress: FC = () => {
         <h2 className="text-xl font-bold text-indigo-900">🔄 Blockchain Indexing</h2>
         <div className="flex items-center space-x-4">
           <div className="flex items-center space-x-2">
-            {connectionStatus === 'connected' && (
+            {!error && (
               <>
                 <div className="h-2 w-2 bg-green-400 rounded-full"></div>
                 <span className="text-sm text-green-600">Live</span>
               </>
             )}
-            {connectionStatus === 'connecting' && (
-              <>
-                <div className="h-2 w-2 bg-yellow-400 rounded-full animate-pulse"></div>
-                <span className="text-sm text-yellow-600">Connecting</span>
-              </>
-            )}
-            {connectionStatus === 'disconnected' && (
-              <>
-                <div className="h-2 w-2 bg-orange-400 rounded-full"></div>
-                <span className="text-sm text-orange-600">Reconnecting</span>
-              </>
-            )}
-            {connectionStatus === 'error' && (
+            {error && (
               <>
                 <div className="h-2 w-2 bg-red-400 rounded-full"></div>
                 <span className="text-sm text-red-600 cursor-pointer" onClick={reconnect}>Retry</span>
@@ -169,7 +222,7 @@ const IndexingProgress: FC = () => {
       <div className="mt-4 p-3 bg-blue-50 rounded-lg">
         <div className="text-sm text-blue-800">
           <strong>Note:</strong> Full historical data and APY calculations will be available once indexing completes.
-          The dashboard shows {connectionStatus === 'connected' ? 'live' : 'cached'} data from indexed blocks.
+          The dashboard shows {!error ? 'live' : 'cached'} data from indexed blocks.
         </div>
       </div>
     </div>

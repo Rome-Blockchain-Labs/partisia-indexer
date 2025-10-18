@@ -12,12 +12,9 @@ class PartisiaTransactionIndexer {
   private readonly liquidStakingContract = process.env.LS_CONTRACT || '02fc82abf81cbb36acfe196faa1ad49ddfa7abdda6';
   private readonly stakingResponsible = process.env.STAKING_RESPONSIBLE || '000016e01e04096e52e0a6021e877f01760552abfb';
 
-  // Flag to control public API usage - can be disabled when local node is upgraded
   private readonly usePublicApiForBlocks = process.env.USE_PUBLIC_API_FOR_BLOCKS !== 'false';
-
-  // Rate limiter for public API calls (max 2 queries per second)
   private lastPublicApiCall = 0;
-  private readonly publicApiRateLimit = 500; // 500ms between calls = 2 per second
+  private readonly publicApiRateLimit = 600;
 
   private currentBlockHeight = 0;
   private lastProcessedBlock = 0;
@@ -30,9 +27,7 @@ class PartisiaTransactionIndexer {
     startTime: Date.now()
   };
 
-  constructor() {
-    // Use shared DB connection from db/client.ts
-  }
+  constructor() {}
 
   async start() {
     console.log('🔍 Starting Partisia Transaction Indexer');
@@ -62,7 +57,6 @@ class PartisiaTransactionIndexer {
 
   private async processBatch(): Promise<void> {
     if (this.lastProcessedBlock >= this.currentBlockHeight) {
-      // Caught up, check for new blocks
       this.currentBlockHeight = await this.getCurrentBlockHeight() || 0;
       await this.sleep(1000);
       return;
@@ -97,32 +91,56 @@ class PartisiaTransactionIndexer {
   }
 
   private async processBlockTransactions(blockNumber: number): Promise<void> {
-    try {
-      // Step 1: Get block identifier (cache-first approach)
-      const blockId = await this.getBlockId(blockNumber);
+    const maxRetries = 3;
 
-      if (!blockId) {
-        return; // Could not get block identifier
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        // Step 1: Get block identifier (cache-first approach)
+        const blockId = await this.getBlockId(blockNumber);
+
+        if (!blockId) {
+          return; // Could not get block identifier
+        }
+
+        // Step 2: Get full block with transaction IDs using local API
+        const blockUrl = `${config.blockchain.apiUrl}/chain/shards/${config.blockchain.shard}/blocks/${blockId}`;
+        const blockResponse = await axios.get(blockUrl, { timeout: 10000 });
+
+        if (!blockResponse.data || !blockResponse.data.transactions || blockResponse.data.transactions.length === 0) {
+          return; // No transactions in this block
+        }
+
+        const transactionIds = blockResponse.data.transactions;
+        const blockTimestamp = new Date(blockResponse.data.productionTime || Date.now());
+
+        // Step 3: Process each transaction
+        for (const txId of transactionIds) {
+          await this.processTransaction(txId, blockNumber, blockTimestamp);
+        }
+
+        // Success - exit retry loop
+        return;
+
+      } catch (error: any) {
+        // Check if this is a rate limit error
+        if (error.response?.status === 429 || error.message.includes('429')) {
+          console.warn(`⏰ Block ${blockNumber} transactions hit rate limit on attempt ${attempt}`);
+
+          if (attempt < maxRetries) {
+            // Exponential backoff for rate limits
+            const delay = 2000 * Math.pow(2, attempt - 1); // 2s, 4s, 8s
+            console.log(`⏳ Waiting ${delay}ms before retry...`);
+            await this.sleep(delay);
+            continue;
+          } else {
+            console.warn(`⚠️  Block ${blockNumber} transactions failed after ${maxRetries} rate limit attempts - skipping for now`);
+          }
+        } else {
+          // Non-rate limit error - log and exit
+          console.warn(`Warning: Could not process transactions for block ${blockNumber}: ${error.message}`);
+          return;
+        }
       }
-
-      // Step 2: Get full block with transaction IDs using local API
-      const blockUrl = `${config.blockchain.apiUrl}/chain/shards/${config.blockchain.shard}/blocks/${blockId}`;
-      const blockResponse = await axios.get(blockUrl, { timeout: 10000 });
-
-      if (!blockResponse.data || !blockResponse.data.transactions || blockResponse.data.transactions.length === 0) {
-        return; // No transactions in this block
-      }
-
-      const transactionIds = blockResponse.data.transactions;
-      const blockTimestamp = new Date(blockResponse.data.productionTime || Date.now());
-
-      // Step 3: Process each transaction
-      for (const txId of transactionIds) {
-        await this.processTransaction(txId, blockNumber, blockTimestamp);
-      }
-
-    } catch (error: any) {
-      console.warn(`Warning: Could not process transactions for block ${blockNumber}: ${error.message}`);
     }
   }
 
@@ -310,6 +328,12 @@ class PartisiaTransactionIndexer {
       return blockId;
 
     } catch (error: any) {
+      // Check if this is a rate limit error
+      if (error.response?.status === 429 || error.message.includes('429')) {
+        console.warn(`⏰ Block ${blockNumber} hit rate limit during block ID fetch - will retry with backoff`);
+        throw error; // Let caller handle rate limit with backoff
+      }
+
       console.error(`Failed to get block ID for ${blockNumber}: ${error.message}`);
       return null;
     }

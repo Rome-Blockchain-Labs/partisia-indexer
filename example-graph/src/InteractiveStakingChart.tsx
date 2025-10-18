@@ -17,7 +17,7 @@ import { Line } from 'react-chartjs-2'
 import zoomPlugin from 'chartjs-plugin-zoom'
 import annotationPlugin from 'chartjs-plugin-annotation'
 import { format, subDays, subMonths, parseISO } from 'date-fns'
-import { useStakingData } from './hooks/useStakingData'
+import { useStakingData, useRealtimeUpdates } from './hooks/useStakingData'
 
 // Register Chart.js components
 ChartJS.register(
@@ -51,9 +51,24 @@ const InteractiveStakingChart: FC = () => {
   const [showExchangeRate, setShowExchangeRate] = useState(true)
   const [showVolume, setShowVolume] = useState(false)
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null)
+  const [lastUpdated, setLastUpdated] = useState<Date>(new Date())
 
   // Use the proper useStakingData hook
-  const { data: stakingData, loading, error, currentStats } = useStakingData(timePeriod)
+  const { data: stakingData, loading, error, currentStats, refetch } = useStakingData(timePeriod)
+
+  // Add real-time updates using WebSocket
+  useRealtimeUpdates((newDataPoint) => {
+    // Force a refetch when new data comes in
+    refetch()
+    setLastUpdated(new Date())
+  })
+
+  // Update timestamp when data changes
+  React.useEffect(() => {
+    if (stakingData.length > 0) {
+      setLastUpdated(new Date())
+    }
+  }, [stakingData])
 
   // Convert staking data to chart format
   const data: DataPoint[] = useMemo(() => {
@@ -308,7 +323,12 @@ const InteractiveStakingChart: FC = () => {
     <div className="bg-white rounded-lg shadow-lg p-6">
       {/* Header Controls */}
       <div className="flex flex-wrap items-center justify-between mb-6 gap-4">
-        <h2 className="text-xl font-bold text-gray-800">Liquid Staking Analytics</h2>
+        <div>
+          <h2 className="text-xl font-bold text-gray-800">Liquid Staking Analytics</h2>
+          <p className="text-xs text-gray-500">
+            Last updated: {format(lastUpdated, 'HH:mm:ss')} • Auto-refresh every 10s
+          </p>
+        </div>
 
         {/* Time Period Selector */}
         <div className="flex gap-2">
@@ -348,12 +368,21 @@ const InteractiveStakingChart: FC = () => {
           />
           <span className="text-sm text-gray-700">Exchange Rate</span>
         </label>
-        <button
-          onClick={resetZoom}
-          className="ml-auto px-3 py-1 text-sm bg-gray-100 hover:bg-gray-200 rounded transition-colors"
-        >
-          Reset Zoom
-        </button>
+        <div className="ml-auto flex gap-2">
+          <button
+            onClick={refetch}
+            className="px-3 py-1 text-sm bg-blue-100 hover:bg-blue-200 text-blue-700 rounded transition-colors"
+            disabled={loading}
+          >
+            {loading ? 'Refreshing...' : 'Refresh'}
+          </button>
+          <button
+            onClick={resetZoom}
+            className="px-3 py-1 text-sm bg-gray-100 hover:bg-gray-200 rounded transition-colors"
+          >
+            Reset Zoom
+          </button>
+        </div>
       </div>
 
       {/* Chart */}
