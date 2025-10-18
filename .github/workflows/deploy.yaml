@@ -64,7 +64,7 @@ jobs:
                 POSTGRES_DB: ls_indexer
               volumes:
                 - pgdata_${{ env.ENVIRONMENT }}:/var/lib/postgresql/data
-                - ./src/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+                - ./src/db/schema_sparse.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
               ports:
                 - '${{ env.PORTS_PREFIX }}432:5432'
               networks:
@@ -78,7 +78,7 @@ jobs:
               environment:
                 - NODE_ENV=production
                 - API_PORT=3002
-                - PARTISIA_API_URL=http://127.0.0.1:58081
+                - PARTISIA_API_URL=http://95.216.235.72:18080
                 - LS_CONTRACT=02fc82abf81cbb36acfe196faa1ad49ddfa7abdda6
                 - PARTISIA_SHARD=Shard2
                 - DEPLOYMENT_BLOCK=10682802
@@ -97,6 +97,14 @@ jobs:
                 - MEXC_SYMBOL=MPCUSDT
                 - MEXC_POLL_INTERVAL=10
                 - COINGECKO_API_KEY=${{ secrets.COINGECKO_API_KEY || 'CG-WHeHa5zx8cdGLqhAvbzDTZXh' }}
+                - ENABLE_TX_INDEXER=true
+                - TX_BATCH_SIZE=10
+                - TX_CONCURRENCY=2
+                - TX_RETRY_ATTEMPTS=3
+                - USE_PUBLIC_API_FOR_BLOCKS=true
+                - TEMP_PUBLIC_API_FOR_BLOCKS=https://reader.partisiablockchain.com
+                - STAKING_RESPONSIBLE=000016e01e04096e52e0a6021e877f01760552abfb
+                - ADMIN_ACCOUNT=000016e01e04096e52e0a6021e877f01760552abfb
               ports:
                 - '${{ env.PORTS_PREFIX }}942:3002'
               networks:

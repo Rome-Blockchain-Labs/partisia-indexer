@@ -103,6 +103,26 @@ CREATE TABLE IF NOT EXISTS public.users (
     CONSTRAINT users_pkey PRIMARY KEY (address)
 );
 
+-- Protocol rewards table - stores protocol reward tracking
+CREATE TABLE IF NOT EXISTS public.protocol_rewards (
+    id serial NOT NULL,
+    block_number bigint NOT NULL,
+    amount text NOT NULL,
+    "timestamp" timestamp without time zone NOT NULL,
+    CONSTRAINT protocol_rewards_pkey PRIMARY KEY (id)
+);
+
+-- MPC prices table - stores MPC token prices tied to blocks
+CREATE TABLE IF NOT EXISTS public.mpc_prices (
+    block_number bigint NOT NULL,
+    "timestamp" timestamp without time zone NOT NULL,
+    price_usd numeric(20,10) NOT NULL,
+    market_cap_usd numeric(30,2),
+    volume_24h_usd numeric(30,2),
+    price_change_24h numeric(10,4),
+    CONSTRAINT mpc_prices_pkey PRIMARY KEY (block_number)
+);
+
 -- Performance indexes for contract_states
 CREATE INDEX IF NOT EXISTS idx_contract_states_timestamp
     ON public.contract_states USING btree ("timestamp" DESC);
@@ -125,6 +145,14 @@ CREATE INDEX IF NOT EXISTS idx_transactions_sender
 CREATE INDEX IF NOT EXISTS idx_users_balance
     ON public.users USING btree (balance DESC);
 
+-- Performance indexes for protocol_rewards
+CREATE INDEX IF NOT EXISTS idx_protocol_rewards_block
+    ON public.protocol_rewards USING btree (block_number DESC);
+
+-- Performance indexes for mpc_prices
+CREATE INDEX IF NOT EXISTS idx_mpc_prices_timestamp
+    ON public.mpc_prices USING btree ("timestamp" DESC);
+
 -- Insert default current_state row if not exists
 INSERT INTO public.current_state (
     id, block_number, "timestamp", total_pool_stake_token, total_pool_liquid,
@@ -138,6 +166,8 @@ COMMENT ON TABLE public.current_state IS 'Current state of the liquid staking co
 COMMENT ON TABLE public.price_history IS 'Historical price data from various sources (MEXC, CoinGecko, etc.)';
 COMMENT ON TABLE public.transactions IS 'Blockchain transactions related to the liquid staking contract';
 COMMENT ON TABLE public.users IS 'User balances and activity tracking';
+COMMENT ON TABLE public.protocol_rewards IS 'Protocol reward tracking and distribution history';
+COMMENT ON TABLE public.mpc_prices IS 'MPC token prices tied to specific blocks';
 
 -- Grant permissions (adjust based on your user setup)
 -- GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO indexer;
