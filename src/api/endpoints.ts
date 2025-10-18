@@ -180,6 +180,67 @@ app.get('/api/stats', async (req, res) => {
   }
 });
 
+// Indexing progress endpoint
+app.get('/api/indexing-progress', async (req, res) => {
+  try {
+    // Get current state from database
+    const currentState = await db.query('SELECT block_number FROM current_state WHERE id = 1');
+    const currentBlock = parseInt(currentState.rows[0]?.block_number) || config.blockchain.deploymentBlock;
+
+    // Get current blockchain height
+    const response = await fetch(`${process.env.PARTISIA_API_URL || 'http://localhost:58081'}/chain/shards/Shard2/blocks`);
+    const data = await response.json();
+    const currentHeight = data.blockTime;
+
+    // Get transaction indexer stats
+    let txStats = {};
+    try {
+      const transactionIndexer = require('../transactionIndexer').default;
+      txStats = transactionIndexer.getStats();
+    } catch (e) {
+      txStats = {
+        transactionsProcessed: 0,
+        contractTxFound: 0,
+        adminTxFound: 0
+      };
+    }
+
+    // Calculate progress
+    const totalBlocks = currentHeight - config.blockchain.deploymentBlock;
+    const processedBlocks = currentBlock - config.blockchain.deploymentBlock;
+    const progressPercent = Math.min(100, (processedBlocks / totalBlocks) * 100);
+
+    res.json({
+      stateIndexer: {
+        currentBlock: currentBlock,
+        targetBlock: currentHeight,
+        blocksRemaining: Math.max(0, currentHeight - currentBlock),
+        progressPercent: progressPercent,
+        syncComplete: currentBlock >= currentHeight,
+        blocksPerSecond: 0 // Will be calculated in future
+      },
+      transactionIndexer: {
+        currentBlock: txStats.lastProcessedBlock || config.blockchain.deploymentBlock,
+        targetBlock: currentHeight,
+        blocksRemaining: Math.max(0, currentHeight - (txStats.lastProcessedBlock || config.blockchain.deploymentBlock)),
+        progressPercent: Math.min(100, ((txStats.lastProcessedBlock || config.blockchain.deploymentBlock) - config.blockchain.deploymentBlock) / totalBlocks * 100),
+        transactionsFound: txStats.transactionsProcessed || 0,
+        contractTxFound: txStats.contractTxFound || 0,
+        adminTxFound: txStats.adminTxFound || 0,
+        blocksPerSecond: 0
+      },
+      overall: {
+        progressPercent: progressPercent,
+        syncComplete: currentBlock >= currentHeight,
+        estimatedTimeRemaining: currentBlock >= currentHeight ? 'Complete' : 'Calculating...'
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching indexing progress:', error);
+    res.status(500).json({ error: 'Failed to fetch indexing progress' });
+  }
+});
+
 app.get('/api/apy', async (req, res) => {
   try {
     // Check if indexer sync is complete first

@@ -114,7 +114,7 @@ class PartisiaTransactionIndexer {
       }
 
       const transactionIds = blockResponse.data.transactions;
-      const blockTimestamp = new Date(blockTimeResponse.data.productionTime || Date.now());
+      const blockTimestamp = new Date(blockResponse.data.productionTime || Date.now());
 
       // Step 3: Process each transaction
       for (const txId of transactionIds) {
@@ -349,8 +349,8 @@ class PartisiaTransactionIndexer {
   }
 
   private async updateLastProcessedTxBlock(blockNumber: number): Promise<void> {
-    // We could store this in a separate table or use the max block from transactions table
-    // For now, we rely on MAX(block_number) from transactions table
+    // Update the internal tracker
+    this.lastProcessedBlock = blockNumber;
   }
 
   private chunkArray<T>(array: T[], size: number): T[][] {
@@ -371,6 +371,7 @@ class PartisiaTransactionIndexer {
 
     return {
       ...this.stats,
+      lastProcessedBlock: this.lastProcessedBlock,
       runtime,
       runtimeMinutes: runtimeMinutes.toFixed(2),
       txPerMinute: runtimeMinutes > 0 ? (this.stats.transactionsProcessed / runtimeMinutes).toFixed(2) : '0',

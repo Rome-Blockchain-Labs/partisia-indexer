@@ -163,30 +163,16 @@ export const schema = createSchema({
 
         const result = await db.query(query, params)
 
-        // Apply corrected exchange rate logic at the GraphQL level
-        const deploymentDate = new Date('2025-06-20T14:27:15.860Z')
-
-        return result.rows.map(r => {
-          const timestamp = new Date(r.timestamp)
-          const baseRate = parseFloat(r.exchange_rate) // Always 1.0 from database
-
-          // Calculate time-based reward accumulation (4.5% APY)
-          const daysSinceDeployment = Math.max(0, (timestamp.getTime() - deploymentDate.getTime()) / (1000 * 60 * 60 * 24))
-          const annualAPY = 0.045
-          const dailyRate = annualAPY / 365
-          const accumulatedRewards = daysSinceDeployment * dailyRate
-          const correctedExchangeRate = baseRate + accumulatedRewards
-
-          return {
-            blockNumber: r.block_number,
-            timestamp: timestamp.toISOString(),
-            exchangeRate: correctedExchangeRate.toFixed(10),
-            totalPoolStakeToken: r.total_pool_stake_token,
-            totalPoolLiquid: r.total_pool_liquid,
-            stakeTokenBalance: r.stake_token_balance,
-            totalSmpcValueUsd: r.total_smpc_value_usd ? parseFloat(r.total_smpc_value_usd) : null
-          }
-        })
+        // Return authentic exchange rates directly from blockchain data
+        return result.rows.map(r => ({
+          blockNumber: r.block_number,
+          timestamp: new Date(r.timestamp).toISOString(),
+          exchangeRate: r.exchange_rate, // Use authentic rate from blockchain
+          totalPoolStakeToken: r.total_pool_stake_token,
+          totalPoolLiquid: r.total_pool_liquid,
+          stakeTokenBalance: r.stake_token_balance,
+          totalSmpcValueUsd: r.total_smpc_value_usd ? parseFloat(r.total_smpc_value_usd) : null
+        }))
       },
       
       users: async (_: any, { first, skip, orderBy }: any) => {
