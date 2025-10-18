@@ -61,17 +61,15 @@ const AdvancedDashboard: FC = () => {
     const rewards = liquidSupply - staked
 
     return {
-      labels: ['Principal Staked', 'Accumulated Rewards', 'Protocol Reserves'],
-      data: [staked, rewards > 0 ? rewards : 0, staked * 0.1], // Mock reserves
+      labels: ['Principal Staked', 'Accumulated Rewards'],
+      data: [staked, rewards > 0 ? rewards : 0],
       backgroundColor: [
         'rgba(59, 130, 246, 0.8)',   // Blue
         'rgba(34, 197, 94, 0.8)',    // Green
-        'rgba(168, 85, 247, 0.8)',   // Purple
       ],
       borderColor: [
         'rgb(59, 130, 246)',
         'rgb(34, 197, 94)',
-        'rgb(168, 85, 247)',
       ],
     }
   }, [currentStats])

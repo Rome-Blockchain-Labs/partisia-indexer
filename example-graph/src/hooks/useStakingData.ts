@@ -153,16 +153,28 @@ export function useStakingData(
         dayStart.setUTCHours(0, 0, 0, 0)
         const dayKey = dayStart.toISOString()
 
-        const priceInfo = priceMap.get(dayKey) || { price_usd: 0.01562, market_cap_usd: null, volume_24h_usd: 0 }
+        // Try to find the closest price data, or use the latest available price as fallback
+        let priceInfo = priceMap.get(dayKey)
+        if (!priceInfo && priceMap.size > 0) {
+          // Use the most recent price available as fallback
+          const latestPrice = Array.from(priceMap.values())[priceMap.size - 1]
+          priceInfo = latestPrice
+        }
+        if (!priceInfo) {
+          // Last resort fallback price
+          priceInfo = { price_usd: 0.01562, market_cap_usd: null, volume_24h_usd: 0 }
+        }
 
         // Exchange rates are now corrected at the GraphQL resolver level
         const exchangeRate = parseFloat(ex.rate) // Already corrected by server
-        const mockStaked = Math.floor(8000000 + Math.sin(index * 0.05) * 1000000) // Mock staking progression
-        const mockLiquid = Math.floor(mockStaked * 0.8) // 80% of staked
+
+        // Use real staking data from GraphQL
+        const totalStakedValue = BigInt(ex.totalStake)
+        const totalLiquidValue = BigInt(ex.totalLiquid)
 
         const price = priceInfo.price_usd
-        const totalStaked = BigInt(mockStaked)
-        const totalLiquid = BigInt(mockLiquid)
+        const totalStaked = totalStakedValue
+        const totalLiquid = totalLiquidValue
 
         // Calculate TVL in USD (assuming 6 decimal places for the token)
         const tvlUSD = (Number(totalStaked) / 1e6) * price
@@ -200,11 +212,25 @@ export function useStakingData(
 
       setData(combinedData)
 
-      // Set realistic APY values based on mock staking data
+      // Calculate real APY values based on exchange rate changes
+      const calculateApy = (days: number) => {
+        if (combinedData.length < days * 24) return null
+
+        const latest = combinedData[combinedData.length - 1]
+        const earlier = combinedData[Math.max(0, combinedData.length - days * 24)]
+
+        if (!latest || !earlier || earlier.exchangeRate === 0) return null
+
+        const totalReturn = (latest.exchangeRate - earlier.exchangeRate) / earlier.exchangeRate
+        const annualizedReturn = (totalReturn / days) * 365 * 100
+
+        return Math.max(0, annualizedReturn) // Ensure non-negative APY
+      }
+
       setApy({
-        daily: 4.2,   // 4.2% APY daily
-        weekly: 4.5,  // 4.5% APY weekly
-        monthly: 4.8, // 4.8% APY monthly
+        daily: calculateApy(1),
+        weekly: calculateApy(7),
+        monthly: calculateApy(30),
       })
 
       // Set current stats from the latest data point and stats endpoint

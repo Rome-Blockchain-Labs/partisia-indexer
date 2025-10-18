@@ -14,6 +14,10 @@ class PartisiaIndexer {
   private readonly liquidStakingContract = process.env.LS_CONTRACT || '02fc82abf81cbb36acfe196faa1ad49ddfa7abdda6';
   private readonly stakingResponsible = process.env.STAKING_RESPONSIBLE || '000016e01e04096e52e0a6021e877f01760552abfb';
 
+  // Rate limiter for public API calls (max 2 queries per second)
+  private lastPublicApiCall = 0;
+  private readonly publicApiRateLimit = 500; // 500ms between calls = 2 per second
+
   private currentBlockHeight = 0;
   private lastIndexedBlock = 0;
   private isHealthy = true;
@@ -329,8 +333,7 @@ class PartisiaIndexer {
     // Store sparse data only when present/changed
     await this.storeSparseData(blockNumber, state, pendingUnlocksCount, buyInTokensCount, totalPendingUnlockAmount);
 
-    // Process transactions for this block
-    await this.processBlockTransactions(blockNumber, timestamp);
+    // Transaction processing is now handled by separate transaction indexer
 
     // Update current state for recent blocks
     if (blockNumber >= this.lastIndexedBlock - 100) {
@@ -679,26 +682,55 @@ class PartisiaIndexer {
     };
   }
 
-  // Process transactions for admin calls and rewards
+  // Process transactions for admin calls and rewards using 3-step API process
   private async processBlockTransactions(blockNumber: number, blockTimestamp: Date): Promise<void> {
     try {
-      // Fetch block data with transactions
-      const blockUrl = `${config.blockchain.apiUrl}/chain/shards/${config.blockchain.shard}/blocks?blockTime=${blockNumber}`;
-      const response = await axios.get(blockUrl, { timeout: 10000 });
+      // Step 1: Get block identifier from blockTime
+      // TEMP: Use public API for block identifier fetching due to outdated local node
+      const publicApiUrl = process.env.TEMP_PUBLIC_API_FOR_BLOCKS || config.blockchain.apiUrl;
 
-      if (!response.data || !response.data.transactions) {
+      // Rate limit public API calls to avoid hitting rate limits (max 2 per second)
+      if (publicApiUrl !== config.blockchain.apiUrl) {
+        await this.rateLimitPublicApi();
+      }
+
+      const blockTimeUrl = `${publicApiUrl}/chain/shards/${config.blockchain.shard}/blocks?blockTime=${blockNumber}`;
+      const blockTimeResponse = await axios.get(blockTimeUrl, { timeout: 10000 });
+
+      if (!blockTimeResponse.data || !blockTimeResponse.data.identifier) {
+        return; // Could not get block identifier
+      }
+
+      const blockId = blockTimeResponse.data.identifier;
+
+      // Step 2: Get full block with transaction IDs using block identifier
+      const blockUrl = `${config.blockchain.apiUrl}/chain/shards/${config.blockchain.shard}/blocks/${blockId}`;
+      const blockResponse = await axios.get(blockUrl, { timeout: 10000 });
+
+      if (!blockResponse.data || !blockResponse.data.transactions || blockResponse.data.transactions.length === 0) {
         return; // No transactions in this block
       }
 
-      const transactions = response.data.transactions;
+      const transactionIds = blockResponse.data.transactions;
 
-      for (const tx of transactions) {
-        // Only process transactions to our liquid staking contract
-        if (tx.to !== this.liquidStakingContract) {
-          continue;
+      // Step 3: Fetch each transaction individually
+      for (const txId of transactionIds) {
+        try {
+          const txUrl = `${config.blockchain.apiUrl}/chain/shards/${config.blockchain.shard}/transactions/${txId}`;
+          const txResponse = await axios.get(txUrl, { timeout: 10000 });
+
+          if (!txResponse.data) {
+            continue;
+          }
+
+          const tx = txResponse.data;
+
+          // Process all transactions - we'll identify contract calls during transaction processing
+          console.log(`🔍 DEBUG: Processing transaction ${txId} in block ${blockNumber}`);
+          await this.processTransaction(tx, blockNumber, blockTimestamp);
+        } catch (txError: any) {
+          console.warn(`Warning: Could not fetch transaction ${txId}: ${txError.message}`);
         }
-
-        await this.processTransaction(tx, blockNumber, blockTimestamp);
       }
 
     } catch (error: any) {
@@ -781,6 +813,19 @@ class PartisiaIndexer {
     } catch (error) {
       return null;
     }
+  }
+
+  // Rate limiter to avoid hitting public API limits (max 2 queries per second)
+  private async rateLimitPublicApi(): Promise<void> {
+    const now = Date.now();
+    const timeSinceLastCall = now - this.lastPublicApiCall;
+
+    if (timeSinceLastCall < this.publicApiRateLimit) {
+      const waitTime = this.publicApiRateLimit - timeSinceLastCall;
+      await this.sleep(waitTime);
+    }
+
+    this.lastPublicApiCall = Date.now();
   }
 
   async getCurrentBlock(): Promise<number | null> {

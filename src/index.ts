@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import indexer from './indexer';
+import transactionIndexer from './transactionIndexer';
 import mexcService from './services/mexc-rest-service';
 import db from './db/client';
 import app from './api/endpoints';
@@ -21,10 +22,19 @@ async function main() {
     await new Promise(r => setTimeout(r, 2000));
 
     // Start services
-    await Promise.all([
-      indexer.start(),        // Main unified indexer
+    const enableTxIndexer = process.env.ENABLE_TX_INDEXER !== 'false';
+
+    const services = [
+      indexer.start(),        // Main state indexer
       mexcService.start(),    // Price service
-    ]);
+    ];
+
+    if (enableTxIndexer) {
+      console.log('🔍 Transaction indexer enabled');
+      services.push(transactionIndexer.start()); // Transaction indexer
+    }
+
+    await Promise.all(services);
 
   } catch (error) {
     console.error('Fatal error:', error);
