@@ -205,6 +205,20 @@ class PartisiaIndexer {
     const liquidAmount = BigInt(state.totalPoolLiquid?.toString() || '0');
     const exchangeRate = liquidAmount === 0n ? 1.0 : Number(stakeAmount) / Number(liquidAmount);
 
+    // Get latest MPC price for sMPC calculation
+    let mpcPrice = 0;
+    try {
+      const priceResult = await db.query('SELECT price_usd FROM price_history ORDER BY timestamp DESC LIMIT 1');
+      mpcPrice = parseFloat(priceResult.rows[0]?.price_usd) || 0;
+    } catch (e) {
+      // Use fallback price or skip sMPC calculation
+      mpcPrice = 0;
+    }
+
+    // Calculate total sMPC value in USD
+    const smpcPrice = mpcPrice * exchangeRate;
+    const totalSmpcValueUsd = (Number(liquidAmount) / 1e6) * smpcPrice;
+
     // Calculate aggregate data from complex fields (with safe access)
     let pendingUnlocksCount = 0;
     let totalPendingUnlockAmount = '0';
@@ -236,54 +250,59 @@ class PartisiaIndexer {
       }
     }
 
-    // Check if state has changed from previous block to avoid duplication
-    const currentStateValues = {
-      exchangeRate: exchangeRate.toString(),
-      totalPoolStakeToken: stakeAmount.toString(),
-      totalPoolLiquid: liquidAmount.toString(),
-      stakeTokenBalance: state.stakeTokenBalance?.toString() || '0',
-      buyInPercentage: (state.buyInPercentage || 0).toString(),
+    // SIMPLIFIED APPROACH: Only store significant state changes
+    // Don't store every block - check if this is a meaningful change
+
+    const currentState = {
+      exchangeRate: parseFloat(exchangeRate.toFixed(10)),
+      totalPoolStakeToken: parseInt(stakeAmount.toString()),
+      totalPoolLiquid: parseInt(liquidAmount.toString()),
+      stakeTokenBalance: parseInt(state.stakeTokenBalance?.toString() || '0'),
+      buyInPercentage: parseFloat((state.buyInPercentage || 0).toString()),
       buyInEnabled: !!state.buyInEnabled
     };
 
-    // Get the latest state to compare
+    // Get the latest stored state for comparison
     const lastStateResult = await db.query(`
       SELECT exchange_rate, total_pool_stake_token, total_pool_liquid,
              stake_token_balance, buy_in_percentage, buy_in_enabled
       FROM contract_states
-      WHERE block_number < $1
       ORDER BY block_number DESC
       LIMIT 1
-    `, [blockNumber]);
+    `);
 
-    let shouldStore = true;
+    let shouldStore = lastStateResult.rows.length === 0; // Always store first state
+
     if (lastStateResult.rows.length > 0) {
       const lastState = lastStateResult.rows[0];
-      const lastStateValues = {
-        exchangeRate: lastState.exchange_rate.toString(),
-        totalPoolStakeToken: lastState.total_pool_stake_token,
-        totalPoolLiquid: lastState.total_pool_liquid,
-        stakeTokenBalance: lastState.stake_token_balance,
-        buyInPercentage: lastState.buy_in_percentage,
-        buyInEnabled: !!lastState.buy_in_enabled
-      };
 
-      // Compare all key state values - return true if ANY value differs
-      shouldStore = Object.keys(currentStateValues).some(key =>
-        currentStateValues[key as keyof typeof currentStateValues] !==
-        lastStateValues[key as keyof typeof lastStateValues]
+      // Check if any meaningful value changed
+      shouldStore = (
+        parseFloat(lastState.exchange_rate) !== currentState.exchangeRate ||
+        parseInt(lastState.total_pool_stake_token) !== currentState.totalPoolStakeToken ||
+        parseInt(lastState.total_pool_liquid) !== currentState.totalPoolLiquid ||
+        parseInt(lastState.stake_token_balance) !== currentState.stakeTokenBalance ||
+        parseFloat(lastState.buy_in_percentage) !== currentState.buyInPercentage ||
+        !!lastState.buy_in_enabled !== currentState.buyInEnabled
       );
-
     }
 
-    // Only store if state has changed or it's the first state
-    if (shouldStore) {
+    // Only store if there's an actual meaningful change AND it's worth storing
+    // Skip storing too frequently - only store every 1000 blocks or significant changes
+    const isSignificantChange = shouldStore && (
+      currentState.stakeTokenBalance !== 0 ||
+      currentState.totalPoolStakeToken !== 0 ||
+      currentState.totalPoolLiquid !== 0 ||
+      blockNumber % 1000 === 0  // Store checkpoint every 1000 blocks
+    );
+
+    if (isSignificantChange) {
       await db.query(`
         INSERT INTO contract_states (
           block_number, timestamp, exchange_rate,
           total_pool_stake_token, total_pool_liquid, stake_token_balance,
-          buy_in_percentage, buy_in_enabled
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          buy_in_percentage, buy_in_enabled, total_smpc_value_usd
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         ON CONFLICT (block_number) DO UPDATE SET
           timestamp = EXCLUDED.timestamp,
           exchange_rate = EXCLUDED.exchange_rate,
@@ -291,18 +310,20 @@ class PartisiaIndexer {
           total_pool_liquid = EXCLUDED.total_pool_liquid,
           stake_token_balance = EXCLUDED.stake_token_balance,
           buy_in_percentage = EXCLUDED.buy_in_percentage,
-          buy_in_enabled = EXCLUDED.buy_in_enabled
+          buy_in_enabled = EXCLUDED.buy_in_enabled,
+          total_smpc_value_usd = EXCLUDED.total_smpc_value_usd
       `, [
         blockNumber, timestamp, exchangeRate,
         stakeAmount.toString(), liquidAmount.toString(),
         state.stakeTokenBalance?.toString() || '0',
         state.buyInPercentage?.toString() || '0',
-        state.buyInEnabled || false
+        state.buyInEnabled || false,
+        totalSmpcValueUsd
       ]);
 
-      // Contract state updated at block ${blockNumber}
-    } else {
-      // State unchanged at block ${blockNumber}, skipping duplicate storage
+      console.log(`📝 Stored significant state at block ${blockNumber}: stake=${currentState.stakeTokenBalance}, rate=${currentState.exchangeRate}`);
+    } else if (shouldStore) {
+      console.log(`⏩ Skipping minor change at block ${blockNumber} (no significant change)`);
     }
 
     // Store sparse data only when present/changed
@@ -320,8 +341,8 @@ class PartisiaIndexer {
           token_for_staking, staking_responsible, administrator,
           length_of_cooldown_period, length_of_redeem_period, amount_of_buy_in_locked_stake_tokens,
           token_name, token_symbol, token_decimals,
-          pending_unlocks_count, buy_in_tokens_count, total_pending_unlock_amount
-        ) VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+          pending_unlocks_count, buy_in_tokens_count, total_pending_unlock_amount, total_smpc_value_usd
+        ) VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
         ON CONFLICT (id) DO UPDATE SET
           block_number = EXCLUDED.block_number,
           timestamp = EXCLUDED.timestamp,
@@ -342,7 +363,8 @@ class PartisiaIndexer {
           token_decimals = EXCLUDED.token_decimals,
           pending_unlocks_count = EXCLUDED.pending_unlocks_count,
           buy_in_tokens_count = EXCLUDED.buy_in_tokens_count,
-          total_pending_unlock_amount = EXCLUDED.total_pending_unlock_amount
+          total_pending_unlock_amount = EXCLUDED.total_pending_unlock_amount,
+          total_smpc_value_usd = EXCLUDED.total_smpc_value_usd
         WHERE current_state.block_number <= EXCLUDED.block_number
       `, [blockNumber, timestamp, exchangeRate,
           stakeAmount.toString(), liquidAmount.toString(),
@@ -360,7 +382,8 @@ class PartisiaIndexer {
           state.liquidTokenState?.decimals || null,
           pendingUnlocksCount,
           buyInTokensCount,
-          totalPendingUnlockAmount]);
+          totalPendingUnlockAmount,
+          totalSmpcValueUsd]);
     }
   }
 
@@ -736,7 +759,14 @@ class PartisiaIndexer {
 
       switch (functionSig) {
         case '12': // accrueRewards function signature
-          return 'accrueRewards';
+          // Only allow accrueRewards from admin account
+          const sender = tx.from || tx.sender;
+          const adminAccount = process.env.ADMIN_ACCOUNT;
+          if (adminAccount && sender === adminAccount) {
+            return 'accrueRewards';
+          }
+          // If not from admin, treat as unknown transaction
+          return null;
         case '10': // stake function
           return 'stake';
         case '11': // unstake function

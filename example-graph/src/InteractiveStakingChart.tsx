@@ -1,4 +1,4 @@
-import React, { FC, useMemo, useState, useCallback, useRef, useEffect } from 'react'
+import React, { FC, useMemo, useState, useRef } from 'react'
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -17,7 +17,7 @@ import { Line } from 'react-chartjs-2'
 import zoomPlugin from 'chartjs-plugin-zoom'
 import annotationPlugin from 'chartjs-plugin-annotation'
 import { format, subDays, subMonths, parseISO } from 'date-fns'
-import { API_BASE_URL } from './config'
+import { useStakingData } from './hooks/useStakingData'
 
 // Register Chart.js components
 ChartJS.register(
@@ -38,7 +38,7 @@ interface DataPoint {
   timestamp: string
   price?: number
   exchangeRate?: number
-  totalStaked?: string
+  totalStaked?: number
   apy?: number
 }
 
@@ -50,61 +50,21 @@ const InteractiveStakingChart: FC = () => {
   const [showPrice, setShowPrice] = useState(true)
   const [showExchangeRate, setShowExchangeRate] = useState(true)
   const [showVolume, setShowVolume] = useState(false)
-  const [data, setData] = useState<DataPoint[]>([])
-  const [loading, setLoading] = useState(true)
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null)
 
-  // Fetch data from your indexer API
-  const fetchData = useCallback(async () => {
-    setLoading(true)
-    try {
-      const hours = {
-        '24h': 24,
-        '7d': 168,
-        '30d': 720,
-        '90d': 2160,
-        '1y': 8760,
-        'all': 10000,
-      }[timePeriod]
+  // Use the proper useStakingData hook
+  const { data: stakingData, loading, error, currentStats } = useStakingData(timePeriod)
 
-      const [exchangeRes] = await Promise.all([
-        fetch(`${API_BASE_URL}/exchangeRates?hours=${hours}`),
-      ])
-
-      const rates = await exchangeRes.json()
-
-      // Convert exchange rate data to chart format
-      const mergedData: DataPoint[] = rates.map((rate: any) => ({
-        timestamp: rate.timestamp,
-        exchangeRate: parseFloat(rate.rate),
-        totalStaked: rate.totalStake,
-        price: 0.01562, // Use current MPC price from our MEXC service
-      }))
-
-
-      // Add APY calculations
-      for (let i = 1; i < mergedData.length; i++) {
-        const current = mergedData[i]
-        const dayAgo = mergedData[Math.max(0, i - 24)] // 24 hours ago
-        if (current.exchangeRate && dayAgo.exchangeRate) {
-          const dailyReturn = (current.exchangeRate - dayAgo.exchangeRate) / dayAgo.exchangeRate
-          current.apy = dailyReturn * 365 * 100
-        }
-      }
-
-      setData(mergedData)
-    } catch (error) {
-      console.error('Error fetching data:', error)
-    } finally {
-      setLoading(false)
-    }
-  }, [timePeriod])
-
-  useEffect(() => {
-    fetchData()
-    const interval = setInterval(fetchData, 60000) // Refresh every minute
-    return () => clearInterval(interval)
-  }, [fetchData])
+  // Convert staking data to chart format
+  const data: DataPoint[] = useMemo(() => {
+    return stakingData.map((point) => ({
+      timestamp: point.timestamp.toISOString(),
+      exchangeRate: point.exchangeRate,
+      totalStaked: Number(point.totalStaked) / 1e6, // Convert to millions
+      price: point.price,
+      apy: point.apy
+    }))
+  }, [stakingData])
 
   const chartData = useMemo(() => {
     const labels = data.map(d => format(parseISO(d.timestamp), 'MMM dd HH:mm'))
@@ -197,11 +157,11 @@ const InteractiveStakingChart: FC = () => {
             const lines = []
 
             if (point.totalStaked) {
-              const staked = (parseFloat(point.totalStaked) / 1e6).toFixed(2)
+              const staked = (point.totalStaked).toFixed(2)
               lines.push(`Total Staked: ${staked}M MPC`)
 
               if (point.price) {
-                const tvl = (parseFloat(point.totalStaked) / 1e6 * point.price).toFixed(2)
+                const tvl = (point.totalStaked * point.price).toFixed(2)
                 lines.push(`TVL: $${tvl}M`)
               }
             }
@@ -310,6 +270,40 @@ const InteractiveStakingChart: FC = () => {
     )
   }
 
+  // Show loading or error states
+  if (loading) {
+    return (
+      <div className="bg-white rounded-lg shadow-lg p-6">
+        <div className="text-center py-8">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500 mx-auto"></div>
+          <p className="text-gray-600 mt-2">Loading chart data...</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="bg-white rounded-lg shadow-lg p-6">
+        <div className="text-center py-8">
+          <p className="text-red-600">Error loading chart data: {error.message}</p>
+          <p className="text-gray-500 text-sm mt-2">Please check console for details</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (data.length === 0) {
+    return (
+      <div className="bg-white rounded-lg shadow-lg p-6">
+        <div className="text-center py-8">
+          <p className="text-gray-600">No chart data available</p>
+          <p className="text-gray-500 text-sm mt-2">Data: {JSON.stringify({ stakingDataLength: stakingData.length, currentStats })}</p>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="bg-white rounded-lg shadow-lg p-6">
       {/* Header Controls */}
@@ -391,7 +385,7 @@ const InteractiveStakingChart: FC = () => {
           <div>
             <div className="text-sm text-gray-500">Total Value Locked</div>
             <div className="text-lg font-semibold">
-              ${((parseFloat(data[data.length - 1]?.totalStaked || '0') / 1e6) *
+              ${((data[data.length - 1]?.totalStaked || 0) *
                 (data[data.length - 1]?.price || 0)).toFixed(2)}M
             </div>
           </div>

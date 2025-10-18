@@ -78,48 +78,6 @@ function handleError(error: unknown, res: express.Response, context: string): vo
 
 // API-only server - no frontend serving
 
-app.get('/api/exchangeRates', async (req, res) => {
-  try {
-    const hours = validateNumericInput(req.query.hours as string, 1, 8760, 24); // 1 hour to 1 year
-
-    // For charts, we want evenly distributed data points, not every single block
-    let limit, interval;
-    if (hours <= 24) {
-      limit = 100; // 100 points for 24h
-      interval = Math.max(1, Math.floor((hours * 3600) / 100));
-    } else if (hours <= 168) { // 7 days
-      limit = 200;
-      interval = Math.max(1, Math.floor((hours * 3600) / 200));
-    } else {
-      limit = 500;
-      interval = Math.max(1, Math.floor((hours * 3600) / 500));
-    }
-
-    const result = await db.query(`
-WITH ranked_states AS (
-  SELECT
-    block_number as "blockTime",
-    exchange_rate as rate,
-    total_pool_stake_token as "totalStake",
-    total_pool_liquid as "totalLiquid",
-    timestamp,
-    ROW_NUMBER() OVER (ORDER BY block_number DESC) as rn
-  FROM contract_states
-)
-SELECT "blockTime", rate, "totalStake", "totalLiquid", timestamp
-FROM ranked_states
-WHERE rn % $1 = 0 OR rn = 1
-ORDER BY "blockTime" ASC
-LIMIT $2
-`, [interval, limit]);
-
-    res.json(result.rows);
-  } catch (error) {
-    console.error('Error fetching rates:', error);
-    res.status(500).json({ error: 'Failed to fetch rates' });
-  }
-});
-
 // Debug endpoint to check all transactions
 app.get('/api/transactions', async (req, res) => {
   try {
@@ -352,6 +310,31 @@ LIMIT 1
   }
 });
 
+app.get('/api/current', async (req, res) => {
+  try {
+    const [state, price] = await Promise.all([
+      db.query('SELECT * FROM current_state WHERE id = 1'),
+      db.query('SELECT price_usd FROM price_history ORDER BY timestamp DESC LIMIT 1')
+    ]);
+
+    const s = state.rows[0];
+    const p = parseFloat(price.rows[0]?.price_usd) || 0;
+    const staked = BigInt(s?.total_pool_stake_token || '0');
+    const liquid = BigInt(s?.total_pool_liquid || '0');
+
+    res.json({
+      blockNumber: s?.block_number || '0',
+      exchangeRate: s?.exchange_rate || '1.0',
+      totalStaked: staked.toString(),
+      totalLiquid: liquid.toString(),
+      tvlUsd: (Number(staked) / 1e6 * p).toFixed(2)
+    });
+  } catch (error) {
+    console.error('Error fetching current state:', error);
+    res.status(500).json({ error: 'Failed to fetch current state' });
+  }
+});
+
 app.get('/api/stats/combined', async (req, res) => {
   try {
     const [current, mpcPrice] = await Promise.all([
@@ -508,6 +491,31 @@ app.get('/', (req, res) => {
       note: 'Frontend dashboard served at root. Use GraphQL for data queries.',
       version: '1.0.0'
     });
+  }
+});
+
+// Exchange rates endpoint for chart data
+app.get('/api/exchangeRates', async (req, res) => {
+  try {
+    const hours = validateNumericInput(req.query.hours as string, 1, 8760, 24);
+
+    const result = await db.query(`
+      SELECT timestamp, exchange_rate
+      FROM contract_states
+      WHERE timestamp >= NOW() - INTERVAL '1 hour' * $1
+      ORDER BY timestamp DESC
+      LIMIT 1000
+    `, [hours]);
+
+    const exchangeRates = result.rows.map(row => ({
+      timestamp: row.timestamp.toISOString(),
+      exchangeRate: parseFloat(row.exchange_rate)
+    }));
+
+    res.json(exchangeRates);
+  } catch (error) {
+    console.error('Error fetching exchange rates:', error);
+    res.status(500).json({ error: 'Failed to fetch exchange rates' });
   }
 });
 
