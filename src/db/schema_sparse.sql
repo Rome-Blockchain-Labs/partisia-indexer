@@ -9,7 +9,9 @@ CREATE TABLE contract_states (
   total_pool_stake_token TEXT NOT NULL,
   total_pool_liquid TEXT NOT NULL,
   exchange_rate DECIMAL(20,10) NOT NULL,
-  stake_token_balance TEXT NOT NULL
+  stake_token_balance TEXT NOT NULL,
+  buy_in_percentage TEXT NOT NULL,
+  buy_in_enabled BOOLEAN DEFAULT false NOT NULL
 );
 
 -- Governance changes - only store when they actually change
@@ -158,6 +160,7 @@ CREATE TABLE price_history (
   market_cap_usd DECIMAL(30,2),
   volume_24h_usd DECIMAL(30,2),
   source TEXT NOT NULL DEFAULT 'coingecko',
+  metadata JSONB,
   UNIQUE(timestamp, source)
 );
 
@@ -179,3 +182,15 @@ CREATE INDEX idx_protocol_rewards_block ON protocol_rewards(block_number DESC);
 CREATE INDEX idx_users_balance ON users(balance DESC);
 CREATE INDEX idx_price_history_timestamp ON price_history(timestamp DESC);
 CREATE INDEX idx_mpc_prices_timestamp ON mpc_prices(timestamp DESC);
+
+-- Block mappings table to cache blockTime -> blockId mappings
+-- This avoids repeated public API calls for the same blocks
+CREATE TABLE IF NOT EXISTS block_mappings (
+  block_time BIGINT PRIMARY KEY,
+  block_id TEXT NOT NULL UNIQUE,
+  production_time BIGINT,
+  cached_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX idx_block_mappings_block_time ON block_mappings(block_time);
+CREATE INDEX idx_block_mappings_cached_at ON block_mappings(cached_at DESC);
