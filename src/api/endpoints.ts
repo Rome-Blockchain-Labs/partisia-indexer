@@ -5,6 +5,10 @@ import { createYoga } from 'graphql-yoga'
 import { schema } from '../graphql/schema'
 import db from '../db/client';
 
+// Read version from package.json
+const packageJson = require('../../package.json');
+const VERSION = packageJson.version;
+
 const app = express();
 
 // Security middleware
@@ -461,7 +465,7 @@ app.use(express.static(frontendBuildPath));
 app.get('/health', async (req, res) => {
   try {
     const result = await db.query('SELECT NOW()');
-    res.json({ status: 'ok', time: result.rows[0].now });
+    res.json({ status: 'ok', time: result.rows[0].now, version: VERSION });
   } catch (error) {
     handleError(error, res, 'status');
   }
@@ -499,7 +503,10 @@ app.get('/api/status', async (req, res) => {
   try {
     const indexer = require('../indexer').default;
     const stats = await indexer.getStats();
-    res.json(stats);
+    res.json({
+      ...stats,
+      version: VERSION
+    });
   } catch (error) {
     handleError(error, res, 'status');
   }
@@ -507,7 +514,7 @@ app.get('/api/status', async (req, res) => {
 
 app.get('/api', (req, res) => {
   res.json({
-    version: '1.0.0',
+    version: VERSION,
     endpoints: {
       rest: {
         '/stats': {
@@ -551,7 +558,7 @@ app.get('/', (req, res) => {
         health: '/health'
       },
       note: 'Frontend dashboard served at root. Use GraphQL for data queries.',
-      version: '1.0.0'
+      version: VERSION
     });
   }
 });

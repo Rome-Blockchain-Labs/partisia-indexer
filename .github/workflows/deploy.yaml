@@ -124,7 +124,7 @@ jobs:
           ssh-keyscan -H ${{ env.SERVER_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
           ssh partisia@${{ env.SERVER_HOST }} "mkdir -p ${{ env.DEPLOY_PATH }}/src/db"
 
-          tar -czf deploy.tar.gz src migrations scripts package.json tsconfig.json Dockerfile bun.lock docker-compose.${{ env.ENVIRONMENT }}.yaml
+          tar -czf deploy.tar.gz src migrations scripts package.json tsconfig.json Dockerfile bun.lock docker-compose.${{ env.ENVIRONMENT }}.yaml example-graph
           scp deploy.tar.gz partisia@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}/
 
           ssh partisia@${{ env.SERVER_HOST }} << EOF
