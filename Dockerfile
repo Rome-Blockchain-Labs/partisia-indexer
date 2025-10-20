@@ -7,6 +7,7 @@ RUN bun install --frozen-lockfile
 
 COPY src ./src
 COPY tsconfig.json ./
+COPY example-graph ./example-graph
 
 EXPOSE 3002
 
