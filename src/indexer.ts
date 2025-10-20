@@ -288,12 +288,14 @@ class PartisiaIndexer {
       );
     }
 
-    const isSignificantChange = shouldStore && (
-      currentState.stakeTokenBalance !== 0 ||
-      currentState.totalPoolStakeToken !== 0 ||
-      currentState.totalPoolLiquid !== 0 ||
-      blockNumber % 1000 === 0
-    );
+    // Always save every 1000th block, or if state changed and has non-zero values
+    const isSignificantChange =
+      blockNumber % 1000 === 0 ||
+      (shouldStore && (
+        currentState.stakeTokenBalance !== 0 ||
+        currentState.totalPoolStakeToken !== 0 ||
+        currentState.totalPoolLiquid !== 0
+      ));
 
     if (isSignificantChange) {
       await db.query(`

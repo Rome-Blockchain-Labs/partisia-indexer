@@ -526,9 +526,24 @@ app.get('/status', async (req, res) => {
 app.get('/api/status', async (req, res) => {
   try {
     const indexer = require('../indexer').default;
-    const stats = await indexer.getStats();
+    const transactionIndexer = require('../transactionIndexer').default;
+
+    const stateStats = await indexer.getStats();
+    const txStats = transactionIndexer.getStats();
+
     res.json({
-      ...stats,
+      ...stateStats,
+      stateIndexer: {
+        lastIndexedBlock: stateStats.lastIndexedBlock,
+        blocksProcessed: stateStats.performance.blocksProcessed,
+        blocksPerSecond: stateStats.performance.blocksPerSecond
+      },
+      transactionIndexer: {
+        lastIndexedBlock: txStats.lastProcessedBlock || config.blockchain.deploymentBlock,
+        transactionsProcessed: txStats.transactionsProcessed || 0,
+        contractTxFound: txStats.contractTxFound || 0,
+        adminTxFound: txStats.adminTxFound || 0
+      },
       version: VERSION
     });
   } catch (error) {
