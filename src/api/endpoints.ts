@@ -191,10 +191,21 @@ app.get('/api/indexing-progress', async (req, res) => {
     const currentState = await db.query('SELECT block_number FROM current_state WHERE id = 1');
     const currentBlock = parseInt(currentState.rows[0]?.block_number) || config.blockchain.deploymentBlock;
 
-    // Get current blockchain height
-    const response = await fetch(`${process.env.PARTISIA_API_URL || 'http://localhost:58081'}/chain/shards/Shard2/blocks`);
-    const data = await response.json();
-    const currentHeight = data.blockTime;
+    // Get current blockchain height with timeout
+    let currentHeight = currentBlock; // Default to current block if fetch fails
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
+      const response = await fetch(`${process.env.PARTISIA_API_URL || 'http://localhost:58081'}/chain/shards/Shard2/blocks`, {
+        signal: controller.signal
+      });
+      clearTimeout(timeout);
+      const data = await response.json();
+      currentHeight = data.blockTime;
+    } catch (fetchError) {
+      console.error('Failed to fetch current blockchain height:', fetchError);
+      // Use current block as fallback
+    }
 
     // Get transaction indexer stats
     let txStats: any = {
@@ -384,20 +395,33 @@ app.get('/api/current', async (req, res) => {
     ]);
 
     const s = state.rows[0];
+    if (!s) {
+      // No data indexed yet - return default values
+      return res.json({
+        blockNumber: config.blockchain.deploymentBlock.toString(),
+        exchangeRate: '1.0',
+        totalStaked: '0',
+        totalLiquid: '0',
+        tvlUsd: '0.00',
+        syncing: true
+      });
+    }
+
     const p = parseFloat(price.rows[0]?.price_usd) || 0;
     const staked = BigInt(s?.total_pool_stake_token || '0');
     const liquid = BigInt(s?.total_pool_liquid || '0');
 
     res.json({
-      blockNumber: s?.block_number || '0',
+      blockNumber: s?.block_number || config.blockchain.deploymentBlock.toString(),
       exchangeRate: s?.exchange_rate || '1.0',
       totalStaked: staked.toString(),
       totalLiquid: liquid.toString(),
-      tvlUsd: (Number(staked) / 1e6 * p).toFixed(2)
+      tvlUsd: (Number(staked) / 1e6 * p).toFixed(2),
+      syncing: false
     });
   } catch (error) {
     console.error('Error fetching current state:', error);
-    res.status(500).json({ error: 'Failed to fetch current state' });
+    res.status(500).json({ error: 'Failed to fetch current state', details: error instanceof Error ? error.message : String(error) });
   }
 });
 
