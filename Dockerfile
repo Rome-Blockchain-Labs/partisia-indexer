@@ -15,7 +15,7 @@ COPY tsconfig.json ./
 
 # Copy and build frontend
 COPY example-graph ./example-graph
-RUN cd example-graph && npm install && npm run build
+RUN cd example-graph && npm install --legacy-peer-deps && npm run build
 
 EXPOSE 3002
 
