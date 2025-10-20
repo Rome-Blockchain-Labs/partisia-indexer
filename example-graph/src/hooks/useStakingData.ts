@@ -124,11 +124,12 @@ export function useStakingData(
       })) as ExchangeRateData[]
 
       // Fetch price data from MEXC historical endpoint
-      const priceRes = await fetch(`${API_BASE_URL}/api/mpc/prices?hours=${hours}`)
+      const priceRes = await fetch(`${API_BASE_URL}/api/v1/prices/history?hours=${hours}`)
       if (!priceRes.ok) {
         throw new Error('Failed to fetch price data')
       }
-      const priceData = await priceRes.json()
+      const priceResponse = await priceRes.json()
+      const priceData = priceResponse.success ? priceResponse.data.prices : []
 
       // Create a map of prices by timestamp for efficient lookup
       const priceMap = new Map<string, any>()
@@ -346,8 +347,9 @@ export function useHistoricalExchangeRates() {
         }
 
         // Fetch fresh data
-        const response = await fetch(`${API_BASE_URL}/api/exchangeRates?hours=8760`)
-        const freshData = await response.json()
+        const response = await fetch(`${API_BASE_URL}/api/v1/analytics/exchange-rates?hours=8760`)
+        const jsonResponse = await response.json()
+        const freshData = jsonResponse.success ? jsonResponse.data.exchangeRates : []
 
         // Cache the data
         localStorage.setItem(

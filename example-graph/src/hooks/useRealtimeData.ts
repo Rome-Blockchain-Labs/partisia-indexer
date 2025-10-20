@@ -34,7 +34,7 @@ interface UseRealtimeDataOptions {
 
 export function useRealtimeData(options: UseRealtimeDataOptions = {}) {
   const {
-    endpoint = '/api/indexing-progress',
+    endpoint = '/api/v1/indexer/status',
     reconnectInterval = 3000,
     fallbackPollingInterval = 5000
   } = options
@@ -55,10 +55,45 @@ export function useRealtimeData(options: UseRealtimeDataOptions = {}) {
       const apiUrl = process.env.REACT_APP_API_URL || 'http://localhost:3002'
       const response = await fetch(`${apiUrl}${endpoint}`)
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      const progressData = await response.json()
-      setData(progressData)
-      setError(null)
-      return progressData
+      const apiResponse = await response.json()
+
+      // Handle v1 API response format
+      if (apiResponse.success && apiResponse.data) {
+        const data = apiResponse.data
+
+        // Transform v1 response to match RealtimeProgressData interface
+        const progressData: RealtimeProgressData = {
+          stateIndexer: {
+            currentBlock: data.state.currentBlock,
+            targetBlock: data.state.targetBlock,
+            blocksRemaining: data.state.blocksRemaining,
+            progressPercent: data.state.progressPercent,
+            syncComplete: data.state.syncComplete,
+            blocksPerSecond: data.state.blocksPerSecond
+          },
+          transactionIndexer: {
+            currentBlock: data.transactions.currentBlock,
+            targetBlock: data.state.targetBlock,
+            blocksRemaining: Math.max(0, data.state.targetBlock - data.transactions.currentBlock),
+            progressPercent: Math.min(100, ((data.transactions.currentBlock / data.state.targetBlock) * 100)),
+            transactionsFound: data.transactions.transactionsProcessed,
+            contractTxFound: data.transactions.contractTxFound,
+            adminTxFound: data.transactions.adminTxFound,
+            blocksPerSecond: 0
+          },
+          overall: {
+            progressPercent: data.state.progressPercent,
+            syncComplete: data.state.syncComplete,
+            estimatedTimeRemaining: data.overall.syncing ? 'Syncing...' : 'Complete'
+          }
+        }
+
+        setData(progressData)
+        setError(null)
+        return progressData
+      } else {
+        throw new Error(apiResponse.error?.message || 'API request failed')
+      }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : 'Unknown error'
       setError(errorMsg)

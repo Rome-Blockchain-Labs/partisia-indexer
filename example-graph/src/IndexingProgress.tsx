@@ -8,18 +8,44 @@ const IndexingProgress: FC = () => {
 
   const fetchProgress = async () => {
     try {
-      // Use the proper /api/indexing-progress endpoint that provides separate indexer stats
-      const response = await fetch(`${API_BASE_URL}/api/indexing-progress`)
+      // Use the v1 indexer status endpoint
+      const response = await fetch(`${API_BASE_URL}/api/v1/indexer/status`)
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`)
       }
-      const data = await response.json()
+      const apiResponse = await response.json()
 
-      // Use the proper separate progress data from the API
+      if (!apiResponse.success || !apiResponse.data) {
+        throw new Error(apiResponse.error?.message || 'API request failed')
+      }
+
+      const data = apiResponse.data
+
+      // Transform v1 response to match component structure
       const transformedData = {
-        overall: data.overall,
-        stateIndexer: data.stateIndexer,
-        transactionIndexer: data.transactionIndexer
+        overall: {
+          progressPercent: data.state.progressPercent,
+          syncComplete: data.state.syncComplete,
+          estimatedTimeRemaining: data.overall.syncing ? 'Syncing...' : 'Complete'
+        },
+        stateIndexer: {
+          currentBlock: data.state.currentBlock,
+          targetBlock: data.state.targetBlock,
+          blocksRemaining: data.state.blocksRemaining,
+          progressPercent: data.state.progressPercent,
+          blocksPerSecond: data.state.blocksPerSecond,
+          syncComplete: data.state.syncComplete
+        },
+        transactionIndexer: {
+          currentBlock: data.transactions.currentBlock,
+          targetBlock: data.state.targetBlock, // Use same target as state indexer
+          blocksRemaining: Math.max(0, data.state.targetBlock - data.transactions.currentBlock),
+          progressPercent: Math.min(100, ((data.transactions.currentBlock / data.state.targetBlock) * 100)),
+          transactionsFound: data.transactions.transactionsProcessed,
+          contractTxFound: data.transactions.contractTxFound,
+          adminTxFound: data.transactions.adminTxFound,
+          blocksPerSecond: 0 // Not provided in v1 response
+        }
       }
 
       setProgress(transformedData)
