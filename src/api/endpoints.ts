@@ -517,23 +517,74 @@ app.get('/api', (req, res) => {
     version: VERSION,
     endpoints: {
       rest: {
-        '/stats': {
+        '/api/status': {
+          method: 'GET',
+          description: 'Indexer sync status with performance metrics'
+        },
+        '/api/stats': {
           method: 'GET',
           description: 'Current protocol state and deployment info'
         },
-        '/exchangeRates': {
+        '/api/current': {
           method: 'GET',
-          params: { hours: 'number (default: 24)' },
+          description: 'Current contract state with TVL'
+        },
+        '/api/exchangeRates': {
+          method: 'GET',
+          params: { hours: 'number (default: 24, max: 8760)' },
           description: 'Historical exchange rates'
         },
-        '/status': {
+        '/api/apy': {
           method: 'GET',
-          description: 'Indexer sync status'
+          description: 'APY calculations (24h, 7d, 30d)'
+        },
+        '/api/users': {
+          method: 'GET',
+          description: 'Top 100 users by balance'
+        },
+        '/api/transactions': {
+          method: 'GET',
+          description: 'Recent 50 transactions'
+        },
+        '/api/accrueRewards': {
+          method: 'GET',
+          description: 'Accrue reward transactions'
+        },
+        '/api/mpc/current': {
+          method: 'GET',
+          description: 'Current MPC token price'
+        },
+        '/api/mpc/prices': {
+          method: 'GET',
+          params: { hours: 'number (default: 24, max: 8760)' },
+          description: 'Historical MPC prices'
+        },
+        '/health': {
+          method: 'GET',
+          description: 'Health check endpoint'
         }
       },
       graphql: {
         endpoint: '/graphql',
-        playground: '/graphql'
+        playground: '/graphql',
+        description: 'GraphQL API with interactive playground',
+        queries: {
+          contractStates: 'Query contract state history with filters',
+          users: 'Query user balances and activity',
+          transactions: 'Query blockchain transactions with filters',
+          rewards: 'Query reward transactions',
+          currentState: 'Get current contract state with TVL',
+          exchangeRate: 'Get exchange rate and price info',
+          priceHistory: 'Get historical MPC prices',
+          dailyRewardEstimate: 'Get daily reward estimates and APY'
+        },
+        features: [
+          'Pagination (first, skip)',
+          'Filtering (where clauses)',
+          'Sorting (orderBy)',
+          'Rich type system',
+          'Interactive GraphiQL playground'
+        ]
       }
     }
   });
