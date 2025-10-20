@@ -50,16 +50,6 @@ jobs:
         with:
           ssh-private-key: ${{ github.event.inputs.server == 'helhetz01' && secrets.SSH_PRIVATE_KEY_HELHETZ01 || secrets.SSH_PRIVATE_KEY_HELHETZ02 }}
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Build frontend
-        run: |
-          cd example-graph
-          npm install --legacy-peer-deps
-          npm run build
-
       - name: Create docker-compose
         run: |
           cat > docker-compose.${{ env.ENVIRONMENT }}.yaml << 'COMPOSE_EOF'
