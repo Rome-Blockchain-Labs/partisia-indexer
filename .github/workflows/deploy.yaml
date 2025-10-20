@@ -64,7 +64,7 @@ jobs:
                 POSTGRES_DB: ls_indexer
               volumes:
                 - pgdata_${{ env.ENVIRONMENT }}:/var/lib/postgresql/data
-                - ./src/db/schema_sparse.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+                - ./src/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
               ports:
                 - '${{ env.PORTS_PREFIX }}432:5432'
               networks:
@@ -136,7 +136,7 @@ jobs:
             # Ensure database schema exists (apply schema if needed)
             echo "🗃️ Ensuring database schema is initialized"
             docker exec -i \$(docker compose -f docker-compose.${{ env.ENVIRONMENT }}.yaml ps -q postgres) \
-              psql -U indexer -d ls_indexer < src/db/schema_sparse.sql 2>&1 | grep -v "already exists" || true
+              psql -U indexer -d ls_indexer < src/db/schema.sql 2>&1 | grep -v "already exists" || true
 
             # Reset database tables based on mode
             if [[ "${RESET_DB}" == "protocol" ]]; then

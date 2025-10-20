@@ -58,23 +58,23 @@ WITH latest_values AS (
   ORDER BY block_number DESC LIMIT 1
 ),
 latest_governance AS (
-  SELECT DISTINCT ON (1) administrator, staking_responsible, token_for_staking
+  SELECT administrator, staking_responsible, token_for_staking
   FROM governance_changes
   ORDER BY block_number DESC LIMIT 1
 ),
 latest_metadata AS (
-  SELECT DISTINCT ON (1) token_name, token_symbol, token_decimals
+  SELECT token_name, token_symbol, token_decimals
   FROM token_metadata
   ORDER BY block_number DESC LIMIT 1
 ),
 latest_parameters AS (
-  SELECT DISTINCT ON (1) length_of_cooldown_period, length_of_redeem_period,
+  SELECT length_of_cooldown_period, length_of_redeem_period,
          buy_in_percentage, buy_in_enabled, amount_of_buy_in_locked_stake_tokens
   FROM protocol_parameters
   ORDER BY block_number DESC LIMIT 1
 ),
 latest_activity AS (
-  SELECT DISTINCT ON (1) pending_unlocks_count, buy_in_tokens_count, total_pending_unlock_amount
+  SELECT pending_unlocks_count, buy_in_tokens_count, total_pending_unlock_amount
   FROM user_activity
   ORDER BY block_number DESC LIMIT 1
 )
