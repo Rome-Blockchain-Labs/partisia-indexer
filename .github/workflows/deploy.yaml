@@ -101,7 +101,7 @@ jobs:
                 - TX_BATCH_SIZE=10
                 - TX_CONCURRENCY=2
                 - TX_RETRY_ATTEMPTS=3
-                - USE_PUBLIC_API_FOR_BLOCKS=true
+                - USE_PUBLIC_API_FOR_BLOCKS=false
                 - TEMP_PUBLIC_API_FOR_BLOCKS=https://reader.partisiablockchain.com
                 - STAKING_RESPONSIBLE=000016e01e04096e52e0a6021e877f01760552abfb
                 - ADMIN_ACCOUNT=000016e01e04096e52e0a6021e877f01760552abfb
