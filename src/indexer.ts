@@ -296,21 +296,21 @@ class PartisiaIndexer {
 
     if (context.contractStates.length > 0) {
       const values = context.contractStates.map((s: any, i: number) => {
-        const offset = i * 9;
-        return `($${offset+1}, $${offset+2}, $${offset+3}, $${offset+4}, $${offset+5}, $${offset+6}, $${offset+7}, $${offset+8}, $${offset+9})`;
+        const offset = i * 8;
+        return `($${offset+1}, $${offset+2}, $${offset+3}, $${offset+4}, $${offset+5}, $${offset+6}, $${offset+7}, $${offset+8})`;
       }).join(',');
 
       const params = context.contractStates.flatMap((s: any) => [
         s.blockNumber, s.timestamp, s.exchangeRate,
         s.stakeAmount, s.liquidAmount, s.stakeTokenBalance,
-        s.buyInPercentage, s.buyInEnabled, s.totalSmpcValueUsd
+        s.buyInPercentage, s.buyInEnabled
       ]);
 
       promises.push(db.query(`
         INSERT INTO contract_states (
           block_number, timestamp, exchange_rate,
           total_pool_stake_token, total_pool_liquid, stake_token_balance,
-          buy_in_percentage, buy_in_enabled, total_smpc_value_usd
+          buy_in_percentage, buy_in_enabled
         ) VALUES ${values}
         ON CONFLICT (block_number) DO UPDATE SET
           timestamp = EXCLUDED.timestamp,
@@ -319,8 +319,7 @@ class PartisiaIndexer {
           total_pool_liquid = EXCLUDED.total_pool_liquid,
           stake_token_balance = EXCLUDED.stake_token_balance,
           buy_in_percentage = EXCLUDED.buy_in_percentage,
-          buy_in_enabled = EXCLUDED.buy_in_enabled,
-          total_smpc_value_usd = EXCLUDED.total_smpc_value_usd
+          buy_in_enabled = EXCLUDED.buy_in_enabled
       `, params));
     }
 
@@ -408,8 +407,8 @@ class PartisiaIndexer {
           token_for_staking, staking_responsible, administrator,
           length_of_cooldown_period, length_of_redeem_period, amount_of_buy_in_locked_stake_tokens,
           token_name, token_symbol, token_decimals,
-          pending_unlocks_count, buy_in_tokens_count, total_pending_unlock_amount, total_smpc_value_usd
-        ) VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+          pending_unlocks_count, buy_in_tokens_count, total_pending_unlock_amount
+        ) VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
         ON CONFLICT (id) DO UPDATE SET
           block_number = EXCLUDED.block_number,
           timestamp = EXCLUDED.timestamp,
@@ -430,8 +429,7 @@ class PartisiaIndexer {
           token_decimals = EXCLUDED.token_decimals,
           pending_unlocks_count = EXCLUDED.pending_unlocks_count,
           buy_in_tokens_count = EXCLUDED.buy_in_tokens_count,
-          total_pending_unlock_amount = EXCLUDED.total_pending_unlock_amount,
-          total_smpc_value_usd = EXCLUDED.total_smpc_value_usd
+          total_pending_unlock_amount = EXCLUDED.total_pending_unlock_amount
         WHERE current_state.block_number <= EXCLUDED.block_number
       `, [
         s.blockNumber, s.timestamp, s.exchangeRate,
@@ -440,8 +438,7 @@ class PartisiaIndexer {
         s.tokenForStaking, s.stakingResponsible, s.administrator,
         s.lengthOfCooldownPeriod, s.lengthOfRedeemPeriod, s.amountOfBuyInLockedStakeTokens,
         s.tokenName, s.tokenSymbol, s.tokenDecimals,
-        s.pendingUnlocksCount, s.buyInTokensCount, s.totalPendingUnlockAmount,
-        s.totalSmpcValueUsd
+        s.pendingUnlocksCount, s.buyInTokensCount, s.totalPendingUnlockAmount
       ]));
     }
 
@@ -515,12 +512,6 @@ class PartisiaIndexer {
     const is1000thBlock = blockNumber % 1000 === 0;
 
     const mpcPrice = batchContext.mpcPrice;
-    const smpcPrice = mpcPrice * exchangeRate;
-    // Calculate USD value using BigInt to avoid precision loss
-    // liquidAmount is in microMPC (1e6), so divide by 1e6 first
-    const liquidMpc = Number(liquidAmount / 1_000_000n) + Number(liquidAmount % 1_000_000n) / 1_000_000;
-    const totalSmpcValueUsd = liquidMpc * smpcPrice;
-
     let pendingUnlocksCount = 0;
     let totalPendingUnlockAmount = '0';
 
@@ -612,7 +603,6 @@ class PartisiaIndexer {
         stakeTokenBalance: state.stakeTokenBalance?.toString() || '0',
         buyInPercentage: state.buyInPercentage?.toString() || '0',
         buyInEnabled: state.buyInEnabled || false,
-        totalSmpcValueUsd,
         exchange_rate: currentState.exchangeRate,
         total_pool_stake_token: currentState.totalPoolStakeToken,
         total_pool_liquid: currentState.totalPoolLiquid,
@@ -652,8 +642,7 @@ class PartisiaIndexer {
         tokenDecimals: state.liquidTokenState?.decimals || null,
         pendingUnlocksCount,
         buyInTokensCount,
-        totalPendingUnlockAmount,
-        totalSmpcValueUsd
+        totalPendingUnlockAmount
       };
     }
 

@@ -22,7 +22,6 @@ export const schema = createSchema({
       totalPoolStakeToken: String!
       totalPoolLiquid: String!
       stakeTokenBalance: String!
-      totalSmpcValueUsd: Float
     }
     
     type User {
@@ -48,7 +47,6 @@ export const schema = createSchema({
       totalStaked: String!
       totalLiquid: String!
       tvlUsd: String!
-      totalSmpcValueUsd: Float
     }
     
     type ExchangeRate {
@@ -186,8 +184,7 @@ export const schema = createSchema({
           exchangeRate: r.exchange_rate, // Use authentic rate from blockchain
           totalPoolStakeToken: r.total_pool_stake_token,
           totalPoolLiquid: r.total_pool_liquid,
-          stakeTokenBalance: r.stake_token_balance,
-          totalSmpcValueUsd: r.total_smpc_value_usd ? parseFloat(r.total_smpc_value_usd) : null
+          stakeTokenBalance: r.stake_token_balance
         }))
       },
       
@@ -306,8 +303,7 @@ export const schema = createSchema({
           exchangeRate: s?.exchange_rate || '1.0',
           totalStaked: staked.toString(),
           totalLiquid: liquid.toString(),
-          tvlUsd,
-          totalSmpcValueUsd: s?.total_smpc_value_usd ? parseFloat(s.total_smpc_value_usd) : null
+          tvlUsd
         }
       },
       

@@ -24,8 +24,7 @@ CREATE TABLE contract_states (
   token_decimals INTEGER,
   pending_unlocks_count INTEGER DEFAULT 0,
   buy_in_tokens_count INTEGER DEFAULT 0,
-  total_pending_unlock_amount NUMERIC(40,0) DEFAULT 0,
-  total_smpc_value_usd DECIMAL(20,8) DEFAULT 0
+  total_pending_unlock_amount NUMERIC(40,0) DEFAULT 0
 );
 
 -- Governance changes - only store when they actually change
