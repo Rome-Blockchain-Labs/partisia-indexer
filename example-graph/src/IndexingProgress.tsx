@@ -39,8 +39,9 @@ const IndexingProgress: FC = () => {
         transactionIndexer: {
           currentBlock: data.transactions.currentBlock,
           targetBlock: data.transactions.targetBlock,
+          deploymentBlock: data.transactions.deploymentBlock,
           blocksRemaining: data.transactions.blocksRemaining,
-          progressPercent: Math.min(100, ((data.transactions.currentBlock / data.transactions.targetBlock) * 100)),
+          progressPercent: Math.min(100, (((data.transactions.currentBlock - data.transactions.deploymentBlock) / (data.transactions.targetBlock - data.transactions.deploymentBlock)) * 100)),
           transactionsFound: data.transactions.transactionsProcessed,
           contractTxFound: data.transactions.contractTxFound,
           adminTxFound: data.transactions.adminTxFound,

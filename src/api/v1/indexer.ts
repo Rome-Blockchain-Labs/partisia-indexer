@@ -31,15 +31,12 @@ export function createIndexerRouter(): Router {
         const transactionIndexer = require('../../transactionIndexer').default;
         const txStats = transactionIndexer.getStats();
 
-        // Calculate offset from deployment block for proper progress display
-        const currentBlock = (txStats.lastProcessedBlock || config.blockchain.deploymentBlock) - config.blockchain.deploymentBlock;
-        const targetBlock = stateStats.currentBlockHeight - config.blockchain.deploymentBlock;
-
         response.transactions = {
           enabled: true,
-          currentBlock: currentBlock,
-          targetBlock: targetBlock,
-          blocksRemaining: Math.max(0, targetBlock - currentBlock),
+          currentBlock: txStats.lastProcessedBlock || config.blockchain.deploymentBlock,
+          targetBlock: stateStats.currentBlockHeight,
+          deploymentBlock: config.blockchain.deploymentBlock,
+          blocksRemaining: Math.max(0, stateStats.currentBlockHeight - (txStats.lastProcessedBlock || config.blockchain.deploymentBlock)),
           transactionsProcessed: txStats.transactionsProcessed || 0,
           contractTxFound: txStats.contractTxFound || 0,
           adminTxFound: txStats.adminTxFound || 0,
