@@ -7,6 +7,7 @@ class PartisiaTransactionIndexer {
 
   private readonly batchSize = parseInt(process.env.TX_BATCH_SIZE || '50');
   private readonly concurrency = parseInt(process.env.TX_CONCURRENCY || '5');
+  private readonly txConcurrency = parseInt(process.env.TX_PER_BLOCK_CONCURRENCY || '10');
   private readonly retryAttempts = parseInt(process.env.TX_RETRY_ATTEMPTS || '3');
 
   private readonly liquidStakingContract = process.env.LS_CONTRACT || '02fc82abf81cbb36acfe196faa1ad49ddfa7abdda6';
@@ -37,6 +38,10 @@ class PartisiaTransactionIndexer {
   }> = [];
   private readonly bufferFlushSize = 100;
 
+  // Failed blocks retry queue
+  private failedBlocksQueue: Set<number> = new Set();
+  private readonly maxRetryQueueSize = 1000;
+
   constructor() {}
 
   async start() {
@@ -54,15 +59,31 @@ class PartisiaTransactionIndexer {
     console.log(`📊 Starting transaction scan from block ${this.lastProcessedBlock + 1}`);
     console.log(`🎯 Target: ${this.currentBlockHeight} (${this.currentBlockHeight - this.lastProcessedBlock} blocks to scan)`);
 
+    let retryCounter = 0;
     while (this.running) {
       try {
         await this.processBatch();
+
+        // Process retry queue every 10 batches
+        if (++retryCounter % 10 === 0 && this.failedBlocksQueue.size > 0) {
+          await this.processRetryQueue();
+        }
+
         await this.sleep(100); // Small delay between batches
       } catch (error) {
         console.error('❌ Transaction indexer batch failed:', error);
         await this.sleep(5000); // Longer delay on error
       }
     }
+  }
+
+  private async processRetryQueue(): Promise<void> {
+    if (this.failedBlocksQueue.size === 0) return;
+
+    console.log(`🔄 Processing retry queue (${this.failedBlocksQueue.size} blocks)`);
+    const blocksToRetry = Array.from(this.failedBlocksQueue).slice(0, 20); // Retry up to 20 at a time
+
+    await this.processBlocksConcurrently(blocksToRetry);
   }
 
   private async processBatch(): Promise<void> {
@@ -119,55 +140,53 @@ class PartisiaTransactionIndexer {
   }
 
   private async processBlockTransactions(blockNumber: number): Promise<void> {
-    const maxRetries = 3;
+    try {
+      // Step 1: Get block identifier (cache-first approach)
+      const blockId = await this.getBlockId(blockNumber);
 
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      try {
-        // Step 1: Get block identifier (cache-first approach)
-        const blockId = await this.getBlockId(blockNumber);
-
-        if (!blockId) {
-          return; // Could not get block identifier
-        }
-
-        // Step 2: Get full block with transaction IDs using local API
-        const blockUrl = `${config.blockchain.apiUrl}/chain/shards/${config.blockchain.shard}/blocks/${blockId}`;
-        const blockResponse = await axios.get(blockUrl, { timeout: 10000 });
-
-        if (!blockResponse.data || !blockResponse.data.transactions || blockResponse.data.transactions.length === 0) {
-          return; // No transactions in this block
-        }
-
-        const transactionIds = blockResponse.data.transactions;
-        const blockTimestamp = new Date(blockResponse.data.productionTime || Date.now());
-
-        // Step 3: Process all transactions concurrently
-        await Promise.all(
-          transactionIds.map(txId =>
-            this.processTransaction(txId, blockNumber, blockTimestamp)
-              .catch(err => console.warn(`Failed to process tx ${txId}:`, err.message))
-          )
-        );
-
+      if (!blockId) {
+        this.addToRetryQueue(blockNumber);
         return;
-
-      } catch (error: any) {
-        if (error.response?.status === 429 || error.message.includes('429')) {
-          console.warn(`⏰ Block ${blockNumber} transactions hit rate limit on attempt ${attempt}`);
-
-          if (attempt < maxRetries) {
-            const delay = 2000 * Math.pow(2, attempt - 1);
-            console.log(`⏳ Waiting ${delay}ms before retry...`);
-            await this.sleep(delay);
-            continue;
-          } else {
-            console.warn(`⚠️  Block ${blockNumber} transactions failed after ${maxRetries} rate limit attempts - skipping for now`);
-          }
-        } else {
-          console.warn(`Warning: Could not process transactions for block ${blockNumber}: ${error.message}`);
-          return;
-        }
       }
+
+      // Step 2: Get full block with transaction IDs using local API
+      const blockUrl = `${config.blockchain.apiUrl}/chain/shards/${config.blockchain.shard}/blocks/${blockId}`;
+      const blockResponse = await axios.get(blockUrl, { timeout: 10000 });
+
+      if (!blockResponse.data || !blockResponse.data.transactions || blockResponse.data.transactions.length === 0) {
+        return; // No transactions in this block
+      }
+
+      const transactionIds = blockResponse.data.transactions;
+      const blockTimestamp = new Date(blockResponse.data.productionTime || Date.now());
+
+      // Step 3: Process all transactions concurrently
+      await Promise.all(
+        transactionIds.map((txId: string) =>
+          this.processTransaction(txId, blockNumber, blockTimestamp)
+            .catch(err => console.warn(`Failed to process tx ${txId}:`, err.message))
+        )
+      );
+
+      // Success - remove from retry queue if it was there
+      this.failedBlocksQueue.delete(blockNumber);
+
+    } catch (error: any) {
+      if (error.response?.status === 429 || error.message.includes('429') || error.message.includes('timeout')) {
+        console.warn(`⏰ Block ${blockNumber} failed (${error.message}) - adding to retry queue`);
+        this.addToRetryQueue(blockNumber);
+      } else {
+        console.warn(`Warning: Could not process transactions for block ${blockNumber}: ${error.message}`);
+        this.addToRetryQueue(blockNumber);
+      }
+    }
+  }
+
+  private addToRetryQueue(blockNumber: number): void {
+    if (this.failedBlocksQueue.size < this.maxRetryQueueSize) {
+      this.failedBlocksQueue.add(blockNumber);
+    } else {
+      console.warn(`⚠️  Retry queue full (${this.maxRetryQueueSize}), dropping block ${blockNumber}`);
     }
   }
 
