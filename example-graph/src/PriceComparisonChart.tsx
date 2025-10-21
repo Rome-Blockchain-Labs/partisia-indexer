@@ -199,11 +199,11 @@ const PriceComparisonChart: FC = () => {
 
     if (showMarketCap) {
       datasets.push({
-        label: 'sMPC Market Cap',
+        label: 'TVL',
         data: data.map(d => d.marketCap),
         borderColor: 'rgb(249, 115, 22)', // Orange
         backgroundColor: 'rgba(249, 115, 22, 0.1)',
-        yAxisID: 'y-marketcap',
+        yAxisID: 'y-price',
         tension: 0.4,
         fill: false,
         pointRadius: 0,
@@ -214,11 +214,11 @@ const PriceComparisonChart: FC = () => {
 
     if (showPoolSize) {
       datasets.push({
-        label: 'Pool Size (M tokens)',
-        data: data.map(d => d.poolSize),
+        label: 'Pool Size (MPC)',
+        data: data.map(d => d.poolSize / 1e6), // Convert to millions of MPC
         borderColor: 'rgb(236, 72, 153)', // Pink
         backgroundColor: 'rgba(236, 72, 153, 0.1)',
-        yAxisID: 'y-poolsize',
+        yAxisID: 'y-price',
         tension: 0.4,
         fill: false,
         pointRadius: 0,
@@ -290,8 +290,10 @@ const PriceComparisonChart: FC = () => {
               return `sMPC Price: $${point.smpcPrice.toFixed(4)}`
             } else if (label.includes('Exchange')) {
               return `Exchange Rate: ${point.exchangeRate.toFixed(6)}`
-            } else if (label.includes('Market Cap')) {
-              return `sMPC Market Cap: $${(point.marketCap / 1e6).toFixed(2)}M`
+            } else if (label.includes('TVL')) {
+              return `TVL: $${(point.marketCap / 1e6).toFixed(2)}M`
+            } else if (label.includes('Pool Size')) {
+              return `Pool Size: ${(point.poolSize / 1e6).toFixed(2)}M MPC`
             }
             return ''
           },
@@ -339,11 +341,11 @@ const PriceComparisonChart: FC = () => {
       },
       'y-price': {
         type: 'linear',
-        display: showMPC || showSMPC,
+        display: showMPC || showSMPC || showMarketCap || showPoolSize,
         position: 'left',
         title: {
           display: true,
-          text: 'Price (USD)',
+          text: 'USD',
           font: { size: 12, weight: 'bold' },
         },
         grid: {
@@ -352,12 +354,17 @@ const PriceComparisonChart: FC = () => {
         },
         ticks: {
           font: { size: 11 },
-          callback: (value) => `$${Number(value).toFixed(4)}`,
+          callback: (value) => {
+            const num = Number(value);
+            if (num >= 1e6) return `$${(num / 1e6).toFixed(1)}M`;
+            if (num >= 1e3) return `$${(num / 1e3).toFixed(1)}K`;
+            return `$${num.toFixed(2)}`;
+          },
         },
       },
       'y-rate': {
         type: 'linear',
-        display: showRate && !showMarketCap,
+        display: showRate,
         position: 'right',
         title: {
           display: true,
@@ -372,25 +379,8 @@ const PriceComparisonChart: FC = () => {
           callback: (value) => Number(value).toFixed(6),
         },
       },
-      'y-marketcap': {
-        type: 'linear',
-        display: showMarketCap,
-        position: 'right',
-        title: {
-          display: true,
-          text: 'Market Cap (USD)',
-          font: { size: 12, weight: 'bold' },
-        },
-        grid: {
-          drawOnChartArea: false,
-        },
-        ticks: {
-          font: { size: 11 },
-          callback: (value) => `$${(Number(value) / 1e6).toFixed(1)}M`,
-        },
-      },
     },
-  }), [data, showMPC, showSMPC, showRate, showMarketCap])
+  }), [data, showMPC, showSMPC, showRate, showMarketCap, showPoolSize])
 
   const resetZoom = () => {
     if (chartRef.current) {
@@ -516,7 +506,16 @@ const PriceComparisonChart: FC = () => {
             onChange={(e) => setShowMarketCap(e.target.checked)}
             className="w-4 h-4 text-orange-600"
           />
-          <span className="text-sm text-gray-700">Market Cap</span>
+          <span className="text-sm text-gray-700">TVL</span>
+        </label>
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={showPoolSize}
+            onChange={(e) => setShowPoolSize(e.target.checked)}
+            className="w-4 h-4 text-pink-600"
+          />
+          <span className="text-sm text-gray-700">Pool Size (MPC)</span>
         </label>
         <div className="ml-auto flex gap-2">
           <button
@@ -561,7 +560,7 @@ const PriceComparisonChart: FC = () => {
           </div>
         </div>
         <div>
-          <div className="text-sm text-gray-500">Market Cap</div>
+          <div className="text-sm text-gray-500">TVL</div>
           <div className="text-lg font-semibold">
             ${(latestData.marketCap / 1e6).toFixed(2)}M
           </div>
