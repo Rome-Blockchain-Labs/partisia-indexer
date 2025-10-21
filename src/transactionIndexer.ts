@@ -27,6 +27,16 @@ class PartisiaTransactionIndexer {
     startTime: Date.now()
   };
 
+  // Transaction buffer for batched DB writes
+  private transactionBuffer: Array<{
+    txId: string;
+    blockNumber: number;
+    blockTimestamp: Date;
+    action: string;
+    metadata: any;
+  }> = [];
+  private readonly bufferFlushSize = 100;
+
   constructor() {}
 
   async start() {
@@ -74,6 +84,9 @@ class PartisiaTransactionIndexer {
 
     // Process blocks concurrently but rate-limited
     const results = await this.processBlocksConcurrently(blocks);
+
+    // Flush any remaining transactions in buffer
+    await this.flushTransactionBuffer();
 
     this.stats.blocksScanned += blocks.length;
     this.lastProcessedBlock = endBlock;
@@ -128,10 +141,13 @@ class PartisiaTransactionIndexer {
         const transactionIds = blockResponse.data.transactions;
         const blockTimestamp = new Date(blockResponse.data.productionTime || Date.now());
 
-        // Step 3: Process each transaction
-        for (const txId of transactionIds) {
-          await this.processTransaction(txId, blockNumber, blockTimestamp);
-        }
+        // Step 3: Process all transactions concurrently
+        await Promise.all(
+          transactionIds.map(txId =>
+            this.processTransaction(txId, blockNumber, blockTimestamp)
+              .catch(err => console.warn(`Failed to process tx ${txId}:`, err.message))
+          )
+        );
 
         return;
 
@@ -259,19 +275,65 @@ class PartisiaTransactionIndexer {
       contentLength: (tx.content || '').length
     };
 
-    await db.query(`
-      INSERT INTO transactions (tx_hash, block_number, timestamp, action, sender, metadata)
-      VALUES ($1, $2, $3, $4, $5, $6)
-      ON CONFLICT (tx_hash) DO UPDATE SET
-        action = EXCLUDED.action,
-        metadata = EXCLUDED.metadata
-    `, [txId, blockNumber, blockTimestamp, action, 'unknown', JSON.stringify(metadata)]);
+    // Add to buffer instead of immediate write
+    this.transactionBuffer.push({
+      txId,
+      blockNumber,
+      blockTimestamp,
+      action,
+      metadata
+    });
 
     // Update stats
     if (action.includes('admin')) {
       this.stats.adminTxFound++;
     } else {
       this.stats.contractTxFound++;
+    }
+
+    // Flush if buffer is full
+    if (this.transactionBuffer.length >= this.bufferFlushSize) {
+      await this.flushTransactionBuffer();
+    }
+  }
+
+  private async flushTransactionBuffer(): Promise<void> {
+    if (this.transactionBuffer.length === 0) {
+      return;
+    }
+
+    const batch = [...this.transactionBuffer];
+    this.transactionBuffer = [];
+
+    try {
+      // Batch insert all transactions
+      const values = batch.map((_, i) => {
+        const offset = i * 6;
+        return `($${offset+1}, $${offset+2}, $${offset+3}, $${offset+4}, $${offset+5}, $${offset+6})`;
+      }).join(',');
+
+      const params = batch.flatMap(t => [
+        t.txId,
+        t.blockNumber,
+        t.blockTimestamp,
+        t.action,
+        'unknown',
+        JSON.stringify(t.metadata)
+      ]);
+
+      await db.query(`
+        INSERT INTO transactions (tx_hash, block_number, timestamp, action, sender, metadata)
+        VALUES ${values}
+        ON CONFLICT (tx_hash) DO UPDATE SET
+          action = EXCLUDED.action,
+          metadata = EXCLUDED.metadata
+      `, params);
+
+      this.stats.transactionsProcessed += batch.length;
+    } catch (error: any) {
+      console.error(`Failed to flush ${batch.length} transactions:`, error.message);
+      // Re-add to buffer for retry
+      this.transactionBuffer.unshift(...batch);
     }
   }
 
@@ -423,6 +485,8 @@ class PartisiaTransactionIndexer {
 
   async stop() {
     this.running = false;
+    // Flush any remaining buffered transactions
+    await this.flushTransactionBuffer();
     console.log('🛑 Transaction indexer stopped');
     console.log('📊 Final stats:', this.getStats());
   }

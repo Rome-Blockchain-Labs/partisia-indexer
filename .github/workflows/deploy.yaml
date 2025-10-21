@@ -98,8 +98,8 @@ jobs:
                 - MEXC_POLL_INTERVAL=10
                 - COINGECKO_API_KEY=${{ secrets.COINGECKO_API_KEY || 'CG-WHeHa5zx8cdGLqhAvbzDTZXh' }}
                 - ENABLE_TX_INDEXER=true
-                - TX_BATCH_SIZE=10
-                - TX_CONCURRENCY=2
+                - TX_BATCH_SIZE=100
+                - TX_CONCURRENCY=50
                 - TX_RETRY_ATTEMPTS=3
                 - USE_PUBLIC_API_FOR_BLOCKS=false
                 - TEMP_PUBLIC_API_FOR_BLOCKS=https://reader.partisiablockchain.com
