@@ -292,8 +292,7 @@ class PartisiaIndexer {
   }
 
   private async batchWriteChanges(context: any) {
-    const promises = [];
-
+    // Insert contract_states first (required for foreign key constraints)
     if (context.contractStates.length > 0) {
       const values = context.contractStates.map((s: any, i: number) => {
         const offset = i * 8;
@@ -306,7 +305,7 @@ class PartisiaIndexer {
         s.buyInPercentage, s.buyInEnabled
       ]);
 
-      promises.push(db.query(`
+      await db.query(`
         INSERT INTO contract_states (
           block_number, timestamp, exchange_rate,
           total_pool_stake_token, total_pool_liquid, stake_token_balance,
@@ -320,8 +319,11 @@ class PartisiaIndexer {
           stake_token_balance = EXCLUDED.stake_token_balance,
           buy_in_percentage = EXCLUDED.buy_in_percentage,
           buy_in_enabled = EXCLUDED.buy_in_enabled
-      `, params));
+      `, params);
     }
+
+    // Now insert sparse tables (can run in parallel since contract_states exists)
+    const promises = [];
 
     if (context.governanceChanges.length > 0) {
       const values = context.governanceChanges.map((g: any, i: number) => {
