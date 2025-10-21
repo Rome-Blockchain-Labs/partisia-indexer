@@ -38,9 +38,8 @@ class PartisiaTransactionIndexer {
   }> = [];
   private readonly bufferFlushSize = 100;
 
-  // Failed blocks retry queue
-  private failedBlocksQueue: Set<number> = new Set();
-  private readonly maxRetryQueueSize = 1000;
+  // Failed blocks retry queue with attempt tracking
+  private failedBlocksQueue: Map<number, number> = new Map(); // blockNumber -> retryCount
 
   constructor() {}
 
@@ -69,6 +68,11 @@ class PartisiaTransactionIndexer {
           await this.processRetryQueue();
         }
 
+        // Log retry queue status every 50 batches
+        if (retryCounter % 50 === 0 && this.failedBlocksQueue.size > 0) {
+          console.log(`📊 Retry queue status: ${this.failedBlocksQueue.size} blocks pending`);
+        }
+
         await this.sleep(100); // Small delay between batches
       } catch (error) {
         console.error('❌ Transaction indexer batch failed:', error);
@@ -81,7 +85,7 @@ class PartisiaTransactionIndexer {
     if (this.failedBlocksQueue.size === 0) return;
 
     console.log(`🔄 Processing retry queue (${this.failedBlocksQueue.size} blocks)`);
-    const blocksToRetry = Array.from(this.failedBlocksQueue).slice(0, 20); // Retry up to 20 at a time
+    const blocksToRetry = Array.from(this.failedBlocksQueue.keys()).slice(0, 20); // Retry up to 20 at a time
 
     await this.processBlocksConcurrently(blocksToRetry);
   }
@@ -169,7 +173,11 @@ class PartisiaTransactionIndexer {
       );
 
       // Success - remove from retry queue if it was there
-      this.failedBlocksQueue.delete(blockNumber);
+      if (this.failedBlocksQueue.has(blockNumber)) {
+        const attempts = this.failedBlocksQueue.get(blockNumber)!;
+        console.log(`✅ Block ${blockNumber} succeeded after ${attempts} retry attempt(s)`);
+        this.failedBlocksQueue.delete(blockNumber);
+      }
 
     } catch (error: any) {
       if (error.response?.status === 429 || error.message.includes('429') || error.message.includes('timeout')) {
@@ -183,10 +191,13 @@ class PartisiaTransactionIndexer {
   }
 
   private addToRetryQueue(blockNumber: number): void {
-    if (this.failedBlocksQueue.size < this.maxRetryQueueSize) {
-      this.failedBlocksQueue.add(blockNumber);
-    } else {
-      console.warn(`⚠️  Retry queue full (${this.maxRetryQueueSize}), dropping block ${blockNumber}`);
+    const currentAttempts = this.failedBlocksQueue.get(blockNumber) || 0;
+    this.failedBlocksQueue.set(blockNumber, currentAttempts + 1);
+
+    if (currentAttempts === 0) {
+      console.warn(`⚠️  Block ${blockNumber} failed - added to retry queue`);
+    } else if (currentAttempts % 5 === 0) {
+      console.warn(`⚠️  Block ${blockNumber} failed ${currentAttempts + 1} times - still retrying`);
     }
   }
 
@@ -495,6 +506,7 @@ class PartisiaTransactionIndexer {
       deploymentBlock: config.blockchain.deploymentBlock,
       progressPercent: progressPercent.toFixed(1),
       blocksRemaining: this.currentBlockHeight - this.lastProcessedBlock,
+      retryQueueSize: this.failedBlocksQueue.size,
       runtime,
       runtimeMinutes: runtimeMinutes.toFixed(2),
       txPerMinute: runtimeMinutes > 0 ? (this.stats.transactionsProcessed / runtimeMinutes).toFixed(2) : '0',
