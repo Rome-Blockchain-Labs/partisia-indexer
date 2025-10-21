@@ -38,13 +38,13 @@ const IndexingProgress: FC = () => {
         },
         transactionIndexer: {
           currentBlock: data.transactions.currentBlock,
-          targetBlock: data.state.targetBlock, // Use same target as state indexer
-          blocksRemaining: Math.max(0, data.state.targetBlock - data.transactions.currentBlock),
-          progressPercent: Math.min(100, ((data.transactions.currentBlock / data.state.targetBlock) * 100)),
+          targetBlock: data.transactions.targetBlock,
+          blocksRemaining: data.transactions.blocksRemaining,
+          progressPercent: Math.min(100, ((data.transactions.currentBlock / data.transactions.targetBlock) * 100)),
           transactionsFound: data.transactions.transactionsProcessed,
           contractTxFound: data.transactions.contractTxFound,
           adminTxFound: data.transactions.adminTxFound,
-          blocksPerSecond: 0 // Not provided in v1 response
+          blocksPerSecond: data.transactions.blocksPerSecond || 0
         }
       }
 
