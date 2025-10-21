@@ -21,6 +21,8 @@ class PartisiaIndexer {
   private lastIndexedBlock = 0;
   private isHealthy = true;
   private syncComplete = false;
+  private cachedMpcPrice = 0;
+  private lastPriceFetch = 0;
   private stats = {
     blocksProcessed: 0,
     batchesProcessed: 0,
@@ -52,7 +54,7 @@ class PartisiaIndexer {
     while (this.running) {
       try {
         await this.processBatch();
-        await this.sleep(this.usePublicApi ? 1000 : 100);
+        await this.sleep(this.usePublicApi ? 1000 : 10);
       } catch (error: any) {
         console.error('❌ Batch processing error:', error.message);
         await this.sleep(5000);
@@ -79,72 +81,84 @@ class PartisiaIndexer {
 
     console.log(`Processing batch: blocks ${nextBlock}-${batchEnd} (${batchBlocks.length} blocks)`);
 
-    const results = await this.processBlocksConcurrently(batchBlocks);
+    const batchContext = await this.loadBatchContext(nextBlock);
+
+    const results = await this.processBlocksConcurrently(batchBlocks, batchContext);
 
     const successCount = results.filter(r => r.success).length;
     const failedBlocks = results.filter(r => !r.success).map(r => r.block);
 
     if (failedBlocks.length > 0) {
       console.error(`Failed blocks: [${failedBlocks.join(', ')}]`);
-      await this.retryFailedBlocks(failedBlocks);
+      const retryResults = await this.retryFailedBlocks(failedBlocks, batchContext);
+
+      const stillFailed = retryResults.filter(r => !r.success);
+      if (stillFailed.length > 0) {
+        const stillFailedBlocks = stillFailed.map(r => r.block);
+        console.error(`❌ CRITICAL: ${stillFailed.length} blocks permanently failed: [${stillFailedBlocks.join(', ')}]`);
+        throw new Error(`Batch contains ${stillFailed.length} permanently failed blocks`);
+      }
     }
 
-    // Update last indexed block regardless of activity
+    await this.batchWriteChanges(batchContext);
     this.lastIndexedBlock = batchEnd;
     this.stats.batchesProcessed++;
     this.stats.blocksProcessed += (batchEnd - nextBlock + 1);
 
-    const progress = ((this.lastIndexedBlock - config.blockchain.deploymentBlock) /
-                     (this.currentBlockHeight - config.blockchain.deploymentBlock) * 100);
+    const totalBlocks = Math.max(1, this.currentBlockHeight - config.blockchain.deploymentBlock);
+    const progress = ((this.lastIndexedBlock - config.blockchain.deploymentBlock) / totalBlocks * 100);
 
     const blocksPerSecond = this.stats.blocksProcessed / ((Date.now() - this.stats.startTime) / 1000);
-    const eta = (this.currentBlockHeight - this.lastIndexedBlock) / blocksPerSecond;
+    const eta = blocksPerSecond > 0 ? (this.currentBlockHeight - this.lastIndexedBlock) / blocksPerSecond : 0;
 
     const apiInfo = this.usePublicApi ? ' [PUBLIC API]' : '';
     console.log(`Indexer progress: ${progress.toFixed(1)}% complete, block ${this.lastIndexedBlock}/${this.currentBlockHeight}, rate: ${blocksPerSecond.toFixed(1)} blocks/s, ETA: ${Math.round(eta/60)}min${apiInfo}`);
   }
 
 
-  private async processBlocksConcurrently(blocks: number[]): Promise<Array<{block: number, success: boolean}>> {
+  private async processBlocksConcurrently(blocks: number[], batchContext: any): Promise<Array<{block: number, success: boolean}>> {
+    // Maintain exactly N concurrent requests using Promise.race
     const results: Array<{block: number, success: boolean}> = [];
+    const inFlight = new Set<Promise<{block: number, success: boolean}>>();
+    let blockIndex = 0;
 
-    for (let i = 0; i < blocks.length; i += this.concurrency) {
-      const chunk = blocks.slice(i, i + this.concurrency);
+    while (blockIndex < blocks.length) {
+      while (inFlight.size < this.concurrency && blockIndex < blocks.length) {
+        const block = blocks[blockIndex++];
+        const promise = this.processBlockWithRetry(block, batchContext)
+          .then(success => ({ block, success }))
+          .catch(error => {
+            console.error(`❌ Block ${block} failed:`, error);
+            return { block, success: false };
+          });
 
-      const chunkPromises = chunk.map(async (block) => {
-        const success = await this.processBlockWithRetry(block);
-        return { block, success };
-      });
-
-      const chunkResults = await Promise.allSettled(chunkPromises);
-
-      for (const result of chunkResults) {
-        if (result.status === 'fulfilled') {
-          results.push(result.value);
-        } else {
-          console.error(`❌ Promise failed:`, result.reason);
-          results.push({ block: -1, success: false });
-        }
+        inFlight.add(promise);
+        promise.finally(() => inFlight.delete(promise));
       }
 
-      if (i + this.concurrency < blocks.length) {
-        await this.sleep(50);
+      if (inFlight.size > 0) {
+        const completed = await Promise.race(inFlight);
+        results.push(completed);
       }
+    }
+
+    if (inFlight.size > 0) {
+      const remaining = await Promise.all(inFlight);
+      results.push(...remaining);
     }
 
     return results;
   }
 
-  private async processBlockWithRetry(blockNumber: number): Promise<boolean> {
+  private async processBlockWithRetry(blockNumber: number, batchContext?: any): Promise<boolean> {
     for (let attempt = 1; attempt <= 10; attempt++) {
       try {
         if (this.usePublicApi) {
           await this.rateLimitPublicApi();
         }
 
-        const success = await this.processBlock(blockNumber);
-        if (success) return true;
-        return true;
+        const success = await this.processBlock(blockNumber, batchContext);
+        return success;  // Fixed: return actual success status
       } catch (error: any) {
         if (error.response?.status === 429 || error.message.includes('429')) {
           this.stats.rateLimitedBlocks++;
@@ -176,29 +190,304 @@ class PartisiaIndexer {
     this.lastPublicApiCall = Date.now();
   }
 
-  private async retryFailedBlocks(failedBlocks: number[]) {
+  private async retryFailedBlocks(failedBlocks: number[], batchContext: any): Promise<Array<{block: number, success: boolean}>> {
     console.log(`🔁 Retrying ${failedBlocks.length} failed blocks...`);
-    const retryResults = await this.processBlocksConcurrently(failedBlocks);
+    const retryResults = await this.processBlocksConcurrently(failedBlocks, batchContext);
     const stillFailed = retryResults.filter(r => !r.success).length;
     if (stillFailed > 0) {
       console.warn(`⚠️  ${stillFailed} blocks still failed after retry`);
     } else {
       console.log(`✅ All failed blocks recovered`);
     }
+    return retryResults;
   }
 
-  private async processBlock(blockNumber: number): Promise<boolean> {
+  private async processBlock(blockNumber: number, batchContext?: any): Promise<boolean> {
+    const startTime = Date.now();
     try {
       const contractState = await this.getContractState(blockNumber);
       if (!contractState) return false;
-      await this.handleLiquidStakingState(blockNumber, contractState);
+
+      // Don't fetch timestamp yet - we'll fetch it only if we need to store this block
+      // This saves millions of API calls since we only store ~0.3% of blocks
+      const hasStateData = await this.handleLiquidStakingState(blockNumber, contractState, batchContext, null);
+
+      if (batchContext) {
+        const processingTime = Date.now() - startTime;
+        batchContext.indexedBlocks.push({
+          blockNumber,
+          processingTime,
+          hasStateData
+        });
+      }
+
       return true;
     } catch (error: any) {
       throw error;
     }
   }
 
-  private async handleLiquidStakingState(blockNumber: number, blockResponse: BlockResponse) {
+  private async loadBatchContext(batchStartBlock: number) {
+    const now = Date.now();
+    if (now - this.lastPriceFetch > 60000) {
+      try {
+        const priceResult = await db.query('SELECT price_usd FROM price_history ORDER BY timestamp DESC LIMIT 1');
+        this.cachedMpcPrice = parseFloat(priceResult.rows[0]?.price_usd) || 0;
+        this.lastPriceFetch = now;
+      } catch (e) {
+        this.cachedMpcPrice = 0;
+      }
+    }
+
+    const [lastStateResult, lastGov, lastMeta, lastParams] = await Promise.all([
+      db.query(`
+        SELECT exchange_rate, total_pool_stake_token, total_pool_liquid,
+               stake_token_balance, buy_in_percentage, buy_in_enabled
+        FROM contract_states
+        WHERE block_number < $1
+        ORDER BY block_number DESC LIMIT 1
+      `, [batchStartBlock]),
+
+      db.query(`
+        SELECT administrator, staking_responsible, token_for_staking
+        FROM governance_changes
+        WHERE block_number < $1
+        ORDER BY block_number DESC LIMIT 1
+      `, [batchStartBlock]),
+
+      db.query(`
+        SELECT token_name, token_symbol, token_decimals
+        FROM token_metadata
+        WHERE block_number < $1
+        ORDER BY block_number DESC LIMIT 1
+      `, [batchStartBlock]),
+
+      db.query(`
+        SELECT length_of_cooldown_period, length_of_redeem_period, buy_in_percentage,
+               buy_in_enabled, amount_of_buy_in_locked_stake_tokens
+        FROM protocol_parameters
+        WHERE block_number < $1
+        ORDER BY block_number DESC LIMIT 1
+      `, [batchStartBlock])
+    ]);
+
+    return {
+      mpcPrice: this.cachedMpcPrice,
+      lastState: lastStateResult.rows[0] || null,
+      lastGov: lastGov.rows[0] || null,
+      lastMeta: lastMeta.rows[0] || null,
+      lastParams: lastParams.rows[0] || null,
+      contractStates: [],
+      governanceChanges: [],
+      metadataChanges: [],
+      parameterChanges: [],
+      userActivity: [],
+      indexedBlocks: [],
+      currentState: null,
+      currentGov: null,
+      currentMeta: null,
+      currentParams: null,
+      latestFullState: null
+    };
+  }
+
+  private async batchWriteChanges(context: any) {
+    const promises = [];
+
+    if (context.contractStates.length > 0) {
+      const values = context.contractStates.map((s: any, i: number) => {
+        const offset = i * 9;
+        return `($${offset+1}, $${offset+2}, $${offset+3}, $${offset+4}, $${offset+5}, $${offset+6}, $${offset+7}, $${offset+8}, $${offset+9})`;
+      }).join(',');
+
+      const params = context.contractStates.flatMap((s: any) => [
+        s.blockNumber, s.timestamp, s.exchangeRate,
+        s.stakeAmount, s.liquidAmount, s.stakeTokenBalance,
+        s.buyInPercentage, s.buyInEnabled, s.totalSmpcValueUsd
+      ]);
+
+      promises.push(db.query(`
+        INSERT INTO contract_states (
+          block_number, timestamp, exchange_rate,
+          total_pool_stake_token, total_pool_liquid, stake_token_balance,
+          buy_in_percentage, buy_in_enabled, total_smpc_value_usd
+        ) VALUES ${values}
+        ON CONFLICT (block_number) DO UPDATE SET
+          timestamp = EXCLUDED.timestamp,
+          exchange_rate = EXCLUDED.exchange_rate,
+          total_pool_stake_token = EXCLUDED.total_pool_stake_token,
+          total_pool_liquid = EXCLUDED.total_pool_liquid,
+          stake_token_balance = EXCLUDED.stake_token_balance,
+          buy_in_percentage = EXCLUDED.buy_in_percentage,
+          buy_in_enabled = EXCLUDED.buy_in_enabled,
+          total_smpc_value_usd = EXCLUDED.total_smpc_value_usd
+      `, params));
+    }
+
+    if (context.governanceChanges.length > 0) {
+      const values = context.governanceChanges.map((g: any, i: number) => {
+        const offset = i * 4;
+        return `($${offset+1}, $${offset+2}, $${offset+3}, $${offset+4})`;
+      }).join(',');
+
+      const params = context.governanceChanges.flatMap((g: any) => [
+        g.blockNumber, g.administrator, g.stakingResponsible, g.tokenForStaking
+      ]);
+
+      promises.push(db.query(`
+        INSERT INTO governance_changes (block_number, administrator, staking_responsible, token_for_staking)
+        VALUES ${values}
+        ON CONFLICT (block_number) DO NOTHING
+      `, params));
+    }
+
+    if (context.metadataChanges.length > 0) {
+      const values = context.metadataChanges.map((m: any, i: number) => {
+        const offset = i * 4;
+        return `($${offset+1}, $${offset+2}, $${offset+3}, $${offset+4})`;
+      }).join(',');
+
+      const params = context.metadataChanges.flatMap((m: any) => [
+        m.blockNumber, m.tokenName, m.tokenSymbol, m.tokenDecimals
+      ]);
+
+      promises.push(db.query(`
+        INSERT INTO token_metadata (block_number, token_name, token_symbol, token_decimals)
+        VALUES ${values}
+        ON CONFLICT (block_number) DO NOTHING
+      `, params));
+    }
+
+    if (context.parameterChanges.length > 0) {
+      const values = context.parameterChanges.map((p: any, i: number) => {
+        const offset = i * 6;
+        return `($${offset+1}, $${offset+2}, $${offset+3}, $${offset+4}, $${offset+5}, $${offset+6})`;
+      }).join(',');
+
+      const params = context.parameterChanges.flatMap((p: any) => [
+        p.blockNumber, p.cooldownPeriod, p.redeemPeriod,
+        p.buyInPercentage, p.buyInEnabled, p.buyInLockedTokens
+      ]);
+
+      promises.push(db.query(`
+        INSERT INTO protocol_parameters (
+          block_number, length_of_cooldown_period, length_of_redeem_period,
+          buy_in_percentage, buy_in_enabled, amount_of_buy_in_locked_stake_tokens
+        ) VALUES ${values}
+        ON CONFLICT (block_number) DO NOTHING
+      `, params));
+    }
+
+    // Batch insert user activity
+    if (context.userActivity.length > 0) {
+      const values = context.userActivity.map((u: any, i: number) => {
+        const offset = i * 4;
+        return `($${offset+1}, $${offset+2}, $${offset+3}, $${offset+4})`;
+      }).join(',');
+
+      const params = context.userActivity.flatMap((u: any) => [
+        u.blockNumber, u.pendingUnlocksCount, u.buyInTokensCount, u.totalPendingUnlockAmount
+      ]);
+
+      promises.push(db.query(`
+        INSERT INTO user_activity (block_number, pending_unlocks_count, buy_in_tokens_count, total_pending_unlock_amount)
+        VALUES ${values}
+        ON CONFLICT (block_number) DO UPDATE SET
+          pending_unlocks_count = EXCLUDED.pending_unlocks_count,
+          buy_in_tokens_count = EXCLUDED.buy_in_tokens_count,
+          total_pending_unlock_amount = EXCLUDED.total_pending_unlock_amount
+      `, params));
+    }
+
+    if (context.latestFullState) {
+      const s = context.latestFullState;
+      promises.push(db.query(`
+        INSERT INTO current_state (id, block_number, timestamp, exchange_rate,
+          total_pool_stake_token, total_pool_liquid, stake_token_balance,
+          buy_in_percentage, buy_in_enabled,
+          token_for_staking, staking_responsible, administrator,
+          length_of_cooldown_period, length_of_redeem_period, amount_of_buy_in_locked_stake_tokens,
+          token_name, token_symbol, token_decimals,
+          pending_unlocks_count, buy_in_tokens_count, total_pending_unlock_amount, total_smpc_value_usd
+        ) VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+        ON CONFLICT (id) DO UPDATE SET
+          block_number = EXCLUDED.block_number,
+          timestamp = EXCLUDED.timestamp,
+          exchange_rate = EXCLUDED.exchange_rate,
+          total_pool_stake_token = EXCLUDED.total_pool_stake_token,
+          total_pool_liquid = EXCLUDED.total_pool_liquid,
+          stake_token_balance = EXCLUDED.stake_token_balance,
+          buy_in_percentage = EXCLUDED.buy_in_percentage,
+          buy_in_enabled = EXCLUDED.buy_in_enabled,
+          token_for_staking = EXCLUDED.token_for_staking,
+          staking_responsible = EXCLUDED.staking_responsible,
+          administrator = EXCLUDED.administrator,
+          length_of_cooldown_period = EXCLUDED.length_of_cooldown_period,
+          length_of_redeem_period = EXCLUDED.length_of_redeem_period,
+          amount_of_buy_in_locked_stake_tokens = EXCLUDED.amount_of_buy_in_locked_stake_tokens,
+          token_name = EXCLUDED.token_name,
+          token_symbol = EXCLUDED.token_symbol,
+          token_decimals = EXCLUDED.token_decimals,
+          pending_unlocks_count = EXCLUDED.pending_unlocks_count,
+          buy_in_tokens_count = EXCLUDED.buy_in_tokens_count,
+          total_pending_unlock_amount = EXCLUDED.total_pending_unlock_amount,
+          total_smpc_value_usd = EXCLUDED.total_smpc_value_usd
+        WHERE current_state.block_number <= EXCLUDED.block_number
+      `, [
+        s.blockNumber, s.timestamp, s.exchangeRate,
+        s.stakeAmount, s.liquidAmount, s.stakeTokenBalance,
+        s.buyInPercentage, s.buyInEnabled,
+        s.tokenForStaking, s.stakingResponsible, s.administrator,
+        s.lengthOfCooldownPeriod, s.lengthOfRedeemPeriod, s.amountOfBuyInLockedStakeTokens,
+        s.tokenName, s.tokenSymbol, s.tokenDecimals,
+        s.pendingUnlocksCount, s.buyInTokensCount, s.totalPendingUnlockAmount,
+        s.totalSmpcValueUsd
+      ]));
+    }
+
+    if (context.indexedBlocks.length > 0) {
+      const values = context.indexedBlocks.map((b: any, i: number) => {
+        const paramStart = i * 3 + 1;
+        return `($${paramStart}, $${paramStart + 1}, $${paramStart + 2})`;
+      }).join(', ');
+
+      const params = context.indexedBlocks.flatMap((b: any) => [
+        b.blockNumber,
+        b.processingTime,
+        b.hasStateData
+      ]);
+
+      promises.push(db.query(`
+        INSERT INTO indexed_blocks (block_number, processing_time_ms, has_state_data)
+        VALUES ${values}
+        ON CONFLICT (block_number) DO UPDATE SET
+          indexed_at = NOW(),
+          processing_time_ms = EXCLUDED.processing_time_ms,
+          has_state_data = EXCLUDED.has_state_data
+      `, params));
+    }
+
+    await Promise.all(promises);
+
+    const changes = [
+      context.contractStates.length > 0 ? `${context.contractStates.length} states` : null,
+      context.governanceChanges.length > 0 ? `${context.governanceChanges.length} governance` : null,
+      context.metadataChanges.length > 0 ? `${context.metadataChanges.length} metadata` : null,
+      context.parameterChanges.length > 0 ? `${context.parameterChanges.length} params` : null,
+      context.userActivity.length > 0 ? `${context.userActivity.length} activity` : null,
+      context.indexedBlocks.length > 0 ? `${context.indexedBlocks.length} checkpoints` : null
+    ].filter(Boolean);
+
+    if (changes.length > 0) {
+      console.log(`📝 Batch wrote: ${changes.join(', ')}`);
+    }
+  }
+
+  private async handleLiquidStakingState(blockNumber: number, blockResponse: BlockResponse, batchContext: any, blockTimestamp?: Date | null): Promise<boolean> {
+    if (!batchContext) {
+      throw new Error(`handleLiquidStakingState called without batchContext for block ${blockNumber}`);
+    }
+
     if (!blockResponse.serializedContract) {
       throw new Error(`No serialized contract data for block ${blockNumber}`);
     }
@@ -207,24 +496,30 @@ class PartisiaIndexer {
       Buffer.from(blockResponse.serializedContract, 'base64')
     );
 
-    const timestamp = blockResponse.account?.latestStorageFeeTime
-      ? new Date(blockResponse.account.latestStorageFeeTime)
-      : new Date();
-
     const stakeAmount = BigInt(state.totalPoolStakeToken?.toString() || '0');
     const liquidAmount = BigInt(state.totalPoolLiquid?.toString() || '0');
-    const exchangeRate = liquidAmount === 0n ? 1.0 : Number(stakeAmount) / Number(liquidAmount);
+    const stakeTokenBalance = BigInt(state.stakeTokenBalance?.toString() || '0');
 
-    let mpcPrice = 0;
-    try {
-      const priceResult = await db.query('SELECT price_usd FROM price_history ORDER BY timestamp DESC LIMIT 1');
-      mpcPrice = parseFloat(priceResult.rows[0]?.price_usd) || 0;
-    } catch (e) {
-      mpcPrice = 0;
-    }
+    // Exchange rate = stakeAmount / liquidAmount (how many MPC you get per 1 sMPC)
+    // As rewards accrue, each sMPC represents more MPC, so rate should be >= 1.0
+    // Use high precision: multiply by 1e10, divide, then scale back to float
+    const exchangeRate = liquidAmount === 0n
+      ? 1.0
+      : Number((stakeAmount * 10_000_000_000n) / liquidAmount) / 10_000_000_000;
 
+    const hasActivity = (
+      stakeAmount !== 0n ||
+      liquidAmount !== 0n ||
+      stakeTokenBalance !== 0n
+    );
+    const is1000thBlock = blockNumber % 1000 === 0;
+
+    const mpcPrice = batchContext.mpcPrice;
     const smpcPrice = mpcPrice * exchangeRate;
-    const totalSmpcValueUsd = (Number(liquidAmount) / 1e6) * smpcPrice;
+    // Calculate USD value using BigInt to avoid precision loss
+    // liquidAmount is in microMPC (1e6), so divide by 1e6 first
+    const liquidMpc = Number(liquidAmount / 1_000_000n) + Number(liquidAmount % 1_000_000n) / 1_000_000;
+    const totalSmpcValueUsd = liquidMpc * smpcPrice;
 
     let pendingUnlocksCount = 0;
     let totalPendingUnlockAmount = '0';
@@ -258,238 +553,213 @@ class PartisiaIndexer {
 
     const currentState = {
       exchangeRate: parseFloat(exchangeRate.toFixed(10)),
-      totalPoolStakeToken: parseInt(stakeAmount.toString()),
-      totalPoolLiquid: parseInt(liquidAmount.toString()),
-      stakeTokenBalance: parseInt(state.stakeTokenBalance?.toString() || '0'),
+      totalPoolStakeToken: stakeAmount.toString(),
+      totalPoolLiquid: liquidAmount.toString(),
+      stakeTokenBalance: stakeTokenBalance.toString(),
       buyInPercentage: parseFloat((state.buyInPercentage || 0).toString()),
       buyInEnabled: !!state.buyInEnabled
     };
 
-    const lastStateResult = await db.query(`
-      SELECT exchange_rate, total_pool_stake_token, total_pool_liquid,
-             stake_token_balance, buy_in_percentage, buy_in_enabled
-      FROM contract_states
-      ORDER BY block_number DESC
-      LIMIT 1
-    `);
+    const lastState = batchContext.currentState || batchContext.lastState;
+    let shouldStore = !lastState;
 
-    let shouldStore = lastStateResult.rows.length === 0;
-
-    if (lastStateResult.rows.length > 0) {
-      const lastState = lastStateResult.rows[0];
-
+    if (lastState) {
       shouldStore = (
         parseFloat(lastState.exchange_rate) !== currentState.exchangeRate ||
-        parseInt(lastState.total_pool_stake_token) !== currentState.totalPoolStakeToken ||
-        parseInt(lastState.total_pool_liquid) !== currentState.totalPoolLiquid ||
-        parseInt(lastState.stake_token_balance) !== currentState.stakeTokenBalance ||
+        lastState.total_pool_stake_token.toString() !== currentState.totalPoolStakeToken ||
+        lastState.total_pool_liquid.toString() !== currentState.totalPoolLiquid ||
+        lastState.stake_token_balance.toString() !== currentState.stakeTokenBalance ||
         parseFloat(lastState.buy_in_percentage) !== currentState.buyInPercentage ||
         !!lastState.buy_in_enabled !== currentState.buyInEnabled
       );
     }
 
-    // Always save every 1000th block, or if state changed and has non-zero values
     const isSignificantChange =
-      blockNumber % 1000 === 0 ||
+      is1000thBlock ||
       (shouldStore && (
-        currentState.stakeTokenBalance !== 0 ||
-        currentState.totalPoolStakeToken !== 0 ||
-        currentState.totalPoolLiquid !== 0
+        currentState.stakeTokenBalance !== '0' ||
+        currentState.totalPoolStakeToken !== '0' ||
+        currentState.totalPoolLiquid !== '0'
       ));
 
+    // Fetch real timestamp only if we're going to store this block (huge performance win!)
+    let timestamp: Date;
     if (isSignificantChange) {
-      await db.query(`
-        INSERT INTO contract_states (
-          block_number, timestamp, exchange_rate,
-          total_pool_stake_token, total_pool_liquid, stake_token_balance,
-          buy_in_percentage, buy_in_enabled, total_smpc_value_usd
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        ON CONFLICT (block_number) DO UPDATE SET
-          timestamp = EXCLUDED.timestamp,
-          exchange_rate = EXCLUDED.exchange_rate,
-          total_pool_stake_token = EXCLUDED.total_pool_stake_token,
-          total_pool_liquid = EXCLUDED.total_pool_liquid,
-          stake_token_balance = EXCLUDED.stake_token_balance,
-          buy_in_percentage = EXCLUDED.buy_in_percentage,
-          buy_in_enabled = EXCLUDED.buy_in_enabled,
-          total_smpc_value_usd = EXCLUDED.total_smpc_value_usd
-      `, [
-        blockNumber, timestamp, exchangeRate,
-        stakeAmount.toString(), liquidAmount.toString(),
-        state.stakeTokenBalance?.toString() || '0',
-        state.buyInPercentage?.toString() || '0',
-        state.buyInEnabled || false,
-        totalSmpcValueUsd
-      ]);
+      // Only fetch timestamp for blocks we'll actually store
+      const realTimestamp = await this.getBlockProductionTime(blockNumber);
+      if (realTimestamp) {
+        timestamp = realTimestamp;
+      } else {
+        // Fallback to estimation if fetch fails
+        const blocksSinceDeployment = blockNumber - config.blockchain.deploymentBlock;
+        const estimatedMs = config.blockchain.deploymentTimestamp.getTime() + (blocksSinceDeployment * 2000);
+        timestamp = new Date(estimatedMs);
+      }
+    } else {
+      // For blocks we won't store, use cheap estimation
+      const blocksSinceDeployment = blockNumber - config.blockchain.deploymentBlock;
+      const estimatedMs = config.blockchain.deploymentTimestamp.getTime() + (blocksSinceDeployment * 2000);
+      timestamp = new Date(estimatedMs);
+    }
 
-      console.log(`📝 Stored significant state at block ${blockNumber}: stake=${currentState.stakeTokenBalance}, rate=${currentState.exchangeRate}`);
+    if (isSignificantChange) {
+      const stateRecord = {
+        blockNumber,
+        timestamp,
+        exchangeRate,
+        stakeAmount: stakeAmount.toString(),
+        liquidAmount: liquidAmount.toString(),
+        stakeTokenBalance: state.stakeTokenBalance?.toString() || '0',
+        buyInPercentage: state.buyInPercentage?.toString() || '0',
+        buyInEnabled: state.buyInEnabled || false,
+        totalSmpcValueUsd,
+        exchange_rate: currentState.exchangeRate,
+        total_pool_stake_token: currentState.totalPoolStakeToken,
+        total_pool_liquid: currentState.totalPoolLiquid,
+        stake_token_balance: currentState.stakeTokenBalance,
+        buy_in_percentage: currentState.buyInPercentage,
+        buy_in_enabled: currentState.buyInEnabled
+      };
+
+      batchContext.contractStates.push(stateRecord);
+      batchContext.currentState = stateRecord;
+
+      console.log(`📝 Queued significant state at block ${blockNumber}: stake=${currentState.stakeTokenBalance}, rate=${currentState.exchangeRate}`);
     } else if (shouldStore) {
       console.log(`⏩ Skipping minor change at block ${blockNumber} (no significant change)`);
     }
 
-    await this.storeSparseData(blockNumber, state, pendingUnlocksCount, buyInTokensCount, totalPendingUnlockAmount);
+    await this.storeSparseData(blockNumber, state, pendingUnlocksCount, buyInTokensCount, totalPendingUnlockAmount, batchContext);
+
     if (blockNumber >= this.lastIndexedBlock - 100) {
-      await db.query(`
-        INSERT INTO current_state (id, block_number, timestamp, exchange_rate,
-          total_pool_stake_token, total_pool_liquid, stake_token_balance,
-          buy_in_percentage, buy_in_enabled,
-          token_for_staking, staking_responsible, administrator,
-          length_of_cooldown_period, length_of_redeem_period, amount_of_buy_in_locked_stake_tokens,
-          token_name, token_symbol, token_decimals,
-          pending_unlocks_count, buy_in_tokens_count, total_pending_unlock_amount, total_smpc_value_usd
-        ) VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
-        ON CONFLICT (id) DO UPDATE SET
-          block_number = EXCLUDED.block_number,
-          timestamp = EXCLUDED.timestamp,
-          exchange_rate = EXCLUDED.exchange_rate,
-          total_pool_stake_token = EXCLUDED.total_pool_stake_token,
-          total_pool_liquid = EXCLUDED.total_pool_liquid,
-          stake_token_balance = EXCLUDED.stake_token_balance,
-          buy_in_percentage = EXCLUDED.buy_in_percentage,
-          buy_in_enabled = EXCLUDED.buy_in_enabled,
-          token_for_staking = EXCLUDED.token_for_staking,
-          staking_responsible = EXCLUDED.staking_responsible,
-          administrator = EXCLUDED.administrator,
-          length_of_cooldown_period = EXCLUDED.length_of_cooldown_period,
-          length_of_redeem_period = EXCLUDED.length_of_redeem_period,
-          amount_of_buy_in_locked_stake_tokens = EXCLUDED.amount_of_buy_in_locked_stake_tokens,
-          token_name = EXCLUDED.token_name,
-          token_symbol = EXCLUDED.token_symbol,
-          token_decimals = EXCLUDED.token_decimals,
-          pending_unlocks_count = EXCLUDED.pending_unlocks_count,
-          buy_in_tokens_count = EXCLUDED.buy_in_tokens_count,
-          total_pending_unlock_amount = EXCLUDED.total_pending_unlock_amount,
-          total_smpc_value_usd = EXCLUDED.total_smpc_value_usd
-        WHERE current_state.block_number <= EXCLUDED.block_number
-      `, [blockNumber, timestamp, exchangeRate,
-          stakeAmount.toString(), liquidAmount.toString(),
-          state.stakeTokenBalance?.toString() || '0',
-          state.buyInPercentage?.toString() || '0',
-          state.buyInEnabled || false,
-          state.tokenForStaking?.toString() || null,
-          state.stakingResponsible?.toString() || null,
-          state.administrator?.toString() || null,
-          state.lengthOfCooldownPeriod?.toString() || null,
-          state.lengthOfRedeemPeriod?.toString() || null,
-          state.amountOfBuyInLockedStakeTokens?.toString() || null,
-          state.liquidTokenState?.name || null,
-          state.liquidTokenState?.symbol || null,
-          state.liquidTokenState?.decimals || null,
-          pendingUnlocksCount,
-          buyInTokensCount,
-          totalPendingUnlockAmount,
-          totalSmpcValueUsd]);
+      batchContext.latestFullState = {
+        blockNumber,
+        timestamp,
+        exchangeRate,
+        stakeAmount: stakeAmount.toString(),
+        liquidAmount: liquidAmount.toString(),
+        stakeTokenBalance: state.stakeTokenBalance?.toString() || '0',
+        buyInPercentage: state.buyInPercentage?.toString() || '0',
+        buyInEnabled: state.buyInEnabled || false,
+        tokenForStaking: state.tokenForStaking?.toString() || null,
+        stakingResponsible: state.stakingResponsible?.toString() || null,
+        administrator: state.administrator?.toString() || null,
+        lengthOfCooldownPeriod: state.lengthOfCooldownPeriod?.toString() || null,
+        lengthOfRedeemPeriod: state.lengthOfRedeemPeriod?.toString() || null,
+        amountOfBuyInLockedStakeTokens: state.amountOfBuyInLockedStakeTokens?.toString() || null,
+        tokenName: state.liquidTokenState?.name || null,
+        tokenSymbol: state.liquidTokenState?.symbol || null,
+        tokenDecimals: state.liquidTokenState?.decimals || null,
+        pendingUnlocksCount,
+        buyInTokensCount,
+        totalPendingUnlockAmount,
+        totalSmpcValueUsd
+      };
     }
+
+    return isSignificantChange;
   }
 
-
-  // Store sparse data only when values actually change
-  private async storeSparseData(blockNumber: number, state: any, pendingUnlocksCount: number, buyInTokensCount: number, totalPendingUnlockAmount: string) {
-    // Get current governance values (properly converted)
-    const governance = {
-      administrator: state.administrator?.toString() || null,
-      staking_responsible: state.stakingResponsible?.toString() || null,
-      token_for_staking: state.tokenForStaking?.toString() || null
+  private async storeSparseData(blockNumber: number, state: any, pendingUnlocksCount: number, buyInTokensCount: number, totalPendingUnlockAmount: string, batchContext: any) {
+    // Partisia Address objects need special serialization
+    const serializeAddress = (addr: any) => {
+      if (!addr) return null;
+      if (typeof addr === 'string') return addr;
+      if (addr.identifyingName) return addr.identifyingName;
+      if (addr.addressAsHex) return addr.addressAsHex;
+      if (addr.address) return addr.address;
+      // Handle {val: {type: "Buffer", data: [...]}} structure
+      if (addr.val && addr.val.data && Array.isArray(addr.val.data)) {
+        return Buffer.from(addr.val.data).toString('hex');
+      }
+      // Fallback: convert bytes to hex string if it's a buffer/array
+      if (addr.buffer) return Buffer.from(addr.buffer).toString('hex');
+      return JSON.stringify(addr);
     };
 
-    // Only store governance if values actually changed
-    const lastGov = await db.query(`
-      SELECT administrator, staking_responsible, token_for_staking
-      FROM governance_changes
-      ORDER BY block_number DESC LIMIT 1
-    `);
+    const governance = {
+      administrator: serializeAddress(state.administrator),
+      staking_responsible: serializeAddress(state.stakingResponsible),
+      token_for_staking: serializeAddress(state.tokenForStaking)
+    };
 
-    const prevGov = lastGov.rows[0];
+    const prevGov = batchContext.currentGov || batchContext.lastGov;
     const govChanged = !prevGov ||
       prevGov.administrator !== governance.administrator ||
       prevGov.staking_responsible !== governance.staking_responsible ||
       prevGov.token_for_staking !== governance.token_for_staking;
 
     if (govChanged && (governance.administrator || governance.staking_responsible || governance.token_for_staking)) {
-      await db.query(`
-        INSERT INTO governance_changes (block_number, administrator, staking_responsible, token_for_staking)
-        VALUES ($1, $2, $3, $4)
-        ON CONFLICT (block_number) DO NOTHING
-      `, [blockNumber, governance.administrator, governance.staking_responsible, governance.token_for_staking]);
+      batchContext.governanceChanges.push({
+        blockNumber,
+        administrator: governance.administrator,
+        stakingResponsible: governance.staking_responsible,
+        tokenForStaking: governance.token_for_staking
+      });
+      batchContext.currentGov = governance;
     }
 
-    // Only store token metadata if it changed (usually only once at deployment)
     const metadata = {
-      name: state.liquidTokenState?.name || null,
-      symbol: state.liquidTokenState?.symbol || null,
-      decimals: state.liquidTokenState?.decimals || null
+      token_name: state.liquidTokenState?.name || null,
+      token_symbol: state.liquidTokenState?.symbol || null,
+      token_decimals: state.liquidTokenState?.decimals || null
     };
 
-    const lastMeta = await db.query(`
-      SELECT token_name, token_symbol, token_decimals
-      FROM token_metadata
-      ORDER BY block_number DESC LIMIT 1
-    `);
-
-    const prevMeta = lastMeta.rows[0];
+    const prevMeta = batchContext.currentMeta || batchContext.lastMeta;
     const metaChanged = !prevMeta ||
-      prevMeta.token_name !== metadata.name ||
-      prevMeta.token_symbol !== metadata.symbol ||
-      prevMeta.token_decimals !== metadata.decimals;
+      prevMeta.token_name !== metadata.token_name ||
+      prevMeta.token_symbol !== metadata.token_symbol ||
+      prevMeta.token_decimals !== metadata.token_decimals;
 
-    if (metaChanged && (metadata.name || metadata.symbol || metadata.decimals !== null)) {
-      await db.query(`
-        INSERT INTO token_metadata (block_number, token_name, token_symbol, token_decimals)
-        VALUES ($1, $2, $3, $4)
-        ON CONFLICT (block_number) DO NOTHING
-      `, [blockNumber, metadata.name, metadata.symbol, metadata.decimals]);
+    if (metaChanged && (metadata.token_name || metadata.token_symbol || metadata.token_decimals !== null)) {
+      batchContext.metadataChanges.push({
+        blockNumber,
+        tokenName: metadata.token_name,
+        tokenSymbol: metadata.token_symbol,
+        tokenDecimals: metadata.token_decimals
+      });
+      batchContext.currentMeta = metadata;
     }
 
-    // Only store protocol parameters if they changed
     const parameters = {
-      cooldown_period: state.lengthOfCooldownPeriod?.toString() || null,
-      redeem_period: state.lengthOfRedeemPeriod?.toString() || null,
+      length_of_cooldown_period: state.lengthOfCooldownPeriod?.toString() || null,
+      length_of_redeem_period: state.lengthOfRedeemPeriod?.toString() || null,
       buy_in_percentage: state.buyInPercentage?.toString() || null,
       buy_in_enabled: state.buyInEnabled || null,
-      buy_in_locked_tokens: state.amountOfBuyInLockedStakeTokens?.toString() || null
+      amount_of_buy_in_locked_stake_tokens: state.amountOfBuyInLockedStakeTokens?.toString() || null
     };
 
-    const lastParams = await db.query(`
-      SELECT length_of_cooldown_period, length_of_redeem_period, buy_in_percentage,
-             buy_in_enabled, amount_of_buy_in_locked_stake_tokens
-      FROM protocol_parameters
-      ORDER BY block_number DESC LIMIT 1
-    `);
-
-    const prevParams = lastParams.rows[0];
+    const prevParams = batchContext.currentParams || batchContext.lastParams;
     const paramsChanged = !prevParams ||
-      prevParams.length_of_cooldown_period !== parameters.cooldown_period ||
-      prevParams.length_of_redeem_period !== parameters.redeem_period ||
+      prevParams.length_of_cooldown_period !== parameters.length_of_cooldown_period ||
+      prevParams.length_of_redeem_period !== parameters.length_of_redeem_period ||
       prevParams.buy_in_percentage !== parameters.buy_in_percentage ||
       prevParams.buy_in_enabled !== parameters.buy_in_enabled ||
-      prevParams.amount_of_buy_in_locked_stake_tokens !== parameters.buy_in_locked_tokens;
+      prevParams.amount_of_buy_in_locked_stake_tokens !== parameters.amount_of_buy_in_locked_stake_tokens;
 
-    if (paramsChanged && (parameters.cooldown_period || parameters.redeem_period || parameters.buy_in_percentage ||
-        parameters.buy_in_enabled !== null || parameters.buy_in_locked_tokens)) {
-      await db.query(`
-        INSERT INTO protocol_parameters (
-          block_number, length_of_cooldown_period, length_of_redeem_period,
-          buy_in_percentage, buy_in_enabled, amount_of_buy_in_locked_stake_tokens
-        ) VALUES ($1, $2, $3, $4, $5, $6)
-        ON CONFLICT (block_number) DO NOTHING
-      `, [blockNumber, parameters.cooldown_period, parameters.redeem_period,
-          parameters.buy_in_percentage, parameters.buy_in_enabled, parameters.buy_in_locked_tokens]);
+    if (paramsChanged && (parameters.length_of_cooldown_period || parameters.length_of_redeem_period || parameters.buy_in_percentage ||
+        parameters.buy_in_enabled !== null || parameters.amount_of_buy_in_locked_stake_tokens)) {
+      batchContext.parameterChanges.push({
+        blockNumber,
+        cooldownPeriod: parameters.length_of_cooldown_period,
+        redeemPeriod: parameters.length_of_redeem_period,
+        buyInPercentage: parameters.buy_in_percentage,
+        buyInEnabled: parameters.buy_in_enabled,
+        buyInLockedTokens: parameters.amount_of_buy_in_locked_stake_tokens
+      });
+      batchContext.currentParams = parameters;
     }
 
-    // Store user activity only if there's any activity (already optimal)
     if (pendingUnlocksCount > 0 || buyInTokensCount > 0 || totalPendingUnlockAmount !== '0') {
-      await db.query(`
-        INSERT INTO user_activity (block_number, pending_unlocks_count, buy_in_tokens_count, total_pending_unlock_amount)
-        VALUES ($1, $2, $3, $4)
-        ON CONFLICT (block_number) DO UPDATE SET
-          pending_unlocks_count = EXCLUDED.pending_unlocks_count,
-          buy_in_tokens_count = EXCLUDED.buy_in_tokens_count,
-          total_pending_unlock_amount = EXCLUDED.total_pending_unlock_amount
-      `, [blockNumber, pendingUnlocksCount, buyInTokensCount, totalPendingUnlockAmount]);
+      batchContext.userActivity.push({
+        blockNumber,
+        pendingUnlocksCount,
+        buyInTokensCount,
+        totalPendingUnlockAmount
+      });
     }
   }
 
-  // Handle user balance changes (optimized for batch processing)
   private async handleUserBalances(blockNumber: number, rawState: any) {
     const state = require('./abi/liquid_staking').deserializeState(
       Buffer.from(rawState.serializedContract, 'base64')
@@ -591,41 +861,61 @@ class PartisiaIndexer {
     return blockResponse;
   }
 
-  private async getLastIndexedBlock(): Promise<number> {
-    console.log('📊 Finding first gap in indexed blocks...');
+  private async getBlockProductionTime(blockNumber: number): Promise<Date | null> {
+    try {
+      // Step 1: Check cache in block_mappings table
+      const cachedResult = await db.query(
+        'SELECT production_time FROM block_mappings WHERE block_time = $1',
+        [blockNumber]
+      );
 
-    // Find the first gap in our blocks
-    const gapResult = await db.query(`
-      WITH gaps AS (
-        SELECT block_number,
-               LEAD(block_number) OVER (ORDER BY block_number) - block_number - 1 as gap_size
-        FROM contract_states
-        WHERE block_number >= ${config.blockchain.deploymentBlock}
-        ORDER BY block_number
-      )
-      SELECT block_number + 1 as gap_start
-      FROM gaps
-      WHERE gap_size > 0
-      ORDER BY block_number
-      LIMIT 1
-    `);
+      if (cachedResult.rows.length > 0 && cachedResult.rows[0].production_time) {
+        return new Date(parseInt(cachedResult.rows[0].production_time));
+      }
 
-    if (gapResult.rows.length > 0) {
-      const gapStart = gapResult.rows[0].gap_start - 1;
-      console.log(`📊 Found gap starting at block ${gapStart + 1}, resuming from ${gapStart}`);
-      return gapStart;
+      // Step 2: Fetch block ID from blockTime
+      const blockTimeUrl = `${config.blockchain.apiUrl}/chain/shards/${config.blockchain.shard}/blocks?blockTime=${blockNumber}`;
+      const blockTimeResponse = await axios.get(blockTimeUrl, { timeout: 10000 });
+
+      if (!blockTimeResponse.data || !blockTimeResponse.data.identifier) {
+        return null;
+      }
+
+      const blockId = blockTimeResponse.data.identifier;
+      const productionTime = blockTimeResponse.data.productionTime;
+
+      // Step 3: Cache the result
+      if (productionTime) {
+        await db.query(
+          `INSERT INTO block_mappings (block_time, block_id, production_time)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (block_time) DO UPDATE SET production_time = EXCLUDED.production_time`,
+          [blockNumber, blockId, productionTime]
+        );
+
+        return new Date(productionTime);
+      }
+
+      return null;
+    } catch (error: any) {
+      console.warn(`Failed to fetch production time for block ${blockNumber}: ${error.message}`);
+      return null;
     }
+  }
 
-    // If no gaps, get the actual maximum
+  private async getLastIndexedBlock(): Promise<number> {
+    // Simply get the maximum block number - gaps are intentional (we only save every 1000th block)
     const result = await db.query(`
       SELECT COALESCE(MAX(block_number), ${config.blockchain.deploymentBlock - 1}) as last_block
       FROM contract_states
       WHERE block_number >= ${config.blockchain.deploymentBlock}
     `);
 
-    const lastBlock = parseInt(result.rows[0]?.last_block) || (config.blockchain.deploymentBlock - 1);
-    console.log(`📊 No gaps found, resuming from last indexed block: ${lastBlock}`);
-    return lastBlock;
+    const lastBlock = result.rows[0]?.last_block;
+    // Ensure proper conversion from BigInt/string to number
+    const blockNumber = lastBlock ? parseInt(lastBlock.toString()) : (config.blockchain.deploymentBlock - 1);
+    console.log(`📊 Resuming from last indexed block: ${blockNumber}`);
+    return blockNumber;
   }
 
 
@@ -644,8 +934,9 @@ class PartisiaIndexer {
     `);
 
     const totalBlocks = parseInt(result.rows[0]?.total_blocks) || 0;
-    const expectedBlocks = Math.max(0, this.currentBlockHeight - config.blockchain.deploymentBlock + 1);
-    const progressPercent = expectedBlocks > 0 ? (totalBlocks / expectedBlocks * 100) : 0;
+    const totalExpectedBlocks = Math.max(0, this.currentBlockHeight - config.blockchain.deploymentBlock + 1);
+    const blocksIndexed = Math.max(0, this.lastIndexedBlock - config.blockchain.deploymentBlock + 1);
+    const progressPercent = totalExpectedBlocks > 0 ? (blocksIndexed / totalExpectedBlocks * 100) : 0;
 
     return {
       totalBlocks,

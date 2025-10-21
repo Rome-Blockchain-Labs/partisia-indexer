@@ -2,9 +2,10 @@ import { Pool, PoolConfig, QueryResultRow } from 'pg';
 import config from '../config';
 import { ContractState } from '../domain/types';
 
-// Strict bounds to prevent resource exhaustion
+// Increase pool to handle both indexers (state: 100 concurrency + TX: 50 concurrency)
 const concurrency = Math.min(100, Math.max(10, parseInt(process.env.CONCURRENCY || '50')));
-const maxConnections = Math.min(50, Math.max(10, concurrency + 5));
+const txConcurrency = Math.min(50, Math.max(5, parseInt(process.env.TX_CONCURRENCY || '50')));
+const maxConnections = Math.min(200, Math.max(20, concurrency + txConcurrency + 20));
 
 const poolConfig: PoolConfig = {
   host: config.db.host,
@@ -60,7 +61,7 @@ const client: DatabaseClient = {
     try {
       return await pool.query<T>(text, params);
     } catch (error) {
-      console.error('Database query error:', { error: (error as Error).message, query: text });
+      console.error('Database query error:', { error: (error as Error).message, query: text.substring(0, 200) });
       throw error;
     }
   },
@@ -116,7 +117,9 @@ const client: DatabaseClient = {
 
   async getLatestBlock(): Promise<number> {
     const result = await this.query<{ max_block: number }>('SELECT MAX(block_number) as max_block FROM contract_states');
-    return result.rows[0]?.max_block || 0;
+    const maxBlock = result.rows[0]?.max_block;
+    // Ensure proper conversion from BigInt/string to number
+    return maxBlock ? parseInt(maxBlock.toString()) : 0;
   },
 
   async close(): Promise<void> {

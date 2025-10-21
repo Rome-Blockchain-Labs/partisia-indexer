@@ -83,10 +83,25 @@ class PartisiaTransactionIndexer {
   }
 
   private async processBlocksConcurrently(blocks: number[]): Promise<void> {
-    const chunks = this.chunkArray(blocks, this.concurrency);
+    // Maintain exactly N concurrent requests using Promise.race
+    const inFlight = new Set<Promise<void>>();
+    let blockIndex = 0;
 
-    for (const chunk of chunks) {
-      await Promise.all(chunk.map(block => this.processBlockTransactions(block)));
+    while (blockIndex < blocks.length || inFlight.size > 0) {
+      while (inFlight.size < this.concurrency && blockIndex < blocks.length) {
+        const block = blocks[blockIndex++];
+        const promise = this.processBlockTransactions(block)
+          .catch(error => {
+            console.warn(`Failed to process block ${block}:`, error.message);
+          });
+
+        inFlight.add(promise);
+        promise.finally(() => inFlight.delete(promise));
+      }
+
+      if (inFlight.size > 0) {
+        await Promise.race(inFlight);
+      }
     }
   }
 
@@ -118,17 +133,14 @@ class PartisiaTransactionIndexer {
           await this.processTransaction(txId, blockNumber, blockTimestamp);
         }
 
-        // Success - exit retry loop
         return;
 
       } catch (error: any) {
-        // Check if this is a rate limit error
         if (error.response?.status === 429 || error.message.includes('429')) {
           console.warn(`⏰ Block ${blockNumber} transactions hit rate limit on attempt ${attempt}`);
 
           if (attempt < maxRetries) {
-            // Exponential backoff for rate limits
-            const delay = 2000 * Math.pow(2, attempt - 1); // 2s, 4s, 8s
+            const delay = 2000 * Math.pow(2, attempt - 1);
             console.log(`⏳ Waiting ${delay}ms before retry...`);
             await this.sleep(delay);
             continue;
@@ -136,7 +148,6 @@ class PartisiaTransactionIndexer {
             console.warn(`⚠️  Block ${blockNumber} transactions failed after ${maxRetries} rate limit attempts - skipping for now`);
           }
         } else {
-          // Non-rate limit error - log and exit
           console.warn(`Warning: Could not process transactions for block ${blockNumber}: ${error.message}`);
           return;
         }
@@ -178,51 +189,38 @@ class PartisiaTransactionIndexer {
     const content = tx.content || '';
     const events = tx.executionStatus?.events || [];
 
-    // Convert content and events to searchable strings
-    const contentStr = content.toLowerCase();
+    // Convert hex addresses to bytes for binary search
+    const contractAddressHex = this.liquidStakingContract.toLowerCase();
+    const adminAddressHex = this.stakingResponsible.toLowerCase();
+
+    // Convert hex string to Buffer (remove any 0x prefix)
+    const contractBytes = Buffer.from(contractAddressHex.replace(/^0x/, ''), 'hex');
+    const adminBytes = Buffer.from(adminAddressHex.replace(/^0x/, ''), 'hex');
+
+    // Decode base64 content to binary
+    let contentBuffer: Buffer;
+    try {
+      contentBuffer = Buffer.from(content, 'base64');
+    } catch (e) {
+      // If base64 decode fails, treat as empty
+      contentBuffer = Buffer.alloc(0);
+    }
+
+    // Check if contract or admin address bytes appear in the decoded content
+    const hasContractInContent = contentBuffer.includes(contractBytes);
+    const hasAdminInContent = contentBuffer.includes(adminBytes);
+
+    // Also check in events JSON (events might have addresses)
     const eventsStr = JSON.stringify(events).toLowerCase();
-    const fullTxStr = JSON.stringify(tx).toLowerCase();
+    const hasContractInEvents = eventsStr.includes(contractAddressHex);
+    const hasAdminInEvents = eventsStr.includes(adminAddressHex);
 
-    // Our contract and admin addresses in various formats
-    const contractId = this.liquidStakingContract.toLowerCase();
-    const adminId = this.stakingResponsible.toLowerCase();
-
-    // Check for direct address references
-    const hasDirectContractRef = contentStr.includes(contractId) ||
-                                eventsStr.includes(contractId) ||
-                                fullTxStr.includes(contractId);
-
-    const hasDirectAdminRef = contentStr.includes(adminId) ||
-                             eventsStr.includes(adminId) ||
-                             fullTxStr.includes(adminId);
-
-    // Check for known liquid staking function signatures or patterns
-    const liquidStakingPatterns = [
-      'accrue', 'reward', 'stake', 'unstake', 'redeem', 'buyin',
-      'liquid', 'exchange', 'pool', 'cooldown'
-    ];
-
-    const hasLSPattern = liquidStakingPatterns.some(pattern =>
-      contentStr.includes(pattern) || eventsStr.includes(pattern)
-    );
-
-    // Check for specific known transactions
-    const knownTxIds = [
-      'aaa7919f199cc2c1a8b63dac2a4a5591e7c9e0b553f70794ffb5a83e4fe9b2b7', // accrueRewards
-    ];
-    const isKnownTx = knownTxIds.includes(txId);
-
-    // Check if transaction has events (contract interactions often have events)
-    const hasEvents = events.length > 0;
-
-    // More comprehensive relevance check
-    const isRelevant = hasDirectContractRef ||
-                      hasDirectAdminRef ||
-                      (hasLSPattern && hasEvents) ||
-                      isKnownTx;
+    // A transaction is relevant if it contains our contract or admin address
+    const isRelevant = hasContractInContent || hasAdminInContent ||
+                      hasContractInEvents || hasAdminInEvents;
 
     if (isRelevant) {
-      console.log(`🔍 Relevant transaction found: ${txId} (contract: ${hasDirectContractRef}, admin: ${hasDirectAdminRef}, pattern: ${hasLSPattern}, events: ${hasEvents})`);
+      console.log(`🔍 Relevant transaction found: ${txId} (contract in content: ${hasContractInContent}, admin in content: ${hasAdminInContent}, contract in events: ${hasContractInEvents}, admin in events: ${hasAdminInEvents})`);
     }
 
     return isRelevant;
@@ -277,18 +275,27 @@ class PartisiaTransactionIndexer {
     }
   }
 
+  // In-memory cache for block ID mappings to reduce DB queries
+  private blockIdCache = new Map<number, string>();
+
   // Cache-first block ID resolution - avoid repeated public API calls
   private async getBlockId(blockNumber: number): Promise<string | null> {
     try {
-      // Step 1: Check cache first
+      // Step 1: Check in-memory cache first
+      if (this.blockIdCache.has(blockNumber)) {
+        return this.blockIdCache.get(blockNumber)!;
+      }
+
+      // Step 2: Check database cache
       const cachedResult = await db.query(
         'SELECT block_id FROM block_mappings WHERE block_time = $1',
         [blockNumber]
       );
 
       if (cachedResult.rows.length > 0) {
-        console.log(`📦 Cache hit for block ${blockNumber}`);
-        return cachedResult.rows[0].block_id;
+        const blockId = cachedResult.rows[0].block_id;
+        this.blockIdCache.set(blockNumber, blockId);
+        return blockId;
       }
 
       // Step 2: Cache miss - choose API based on flag
@@ -316,7 +323,7 @@ class PartisiaTransactionIndexer {
       const blockId = blockTimeResponse.data.identifier;
       const productionTime = blockTimeResponse.data.productionTime || null;
 
-      // Step 3: Cache the result
+      // Step 3: Cache the result in both DB and memory
       await db.query(
         `INSERT INTO block_mappings (block_time, block_id, production_time)
          VALUES ($1, $2, $3)
@@ -324,7 +331,7 @@ class PartisiaTransactionIndexer {
         [blockNumber, blockId, productionTime]
       );
 
-      console.log(`💾 Cached mapping: block ${blockNumber} -> ${blockId}`);
+      this.blockIdCache.set(blockNumber, blockId);
       return blockId;
 
     } catch (error: any) {
@@ -365,7 +372,9 @@ class PartisiaTransactionIndexer {
   private async getLastProcessedTxBlock(): Promise<number> {
     try {
       const result = await db.query('SELECT MAX(block_number) as last_block FROM transactions');
-      return result.rows[0]?.last_block || config.blockchain.deploymentBlock;
+      const lastBlock = result.rows[0]?.last_block;
+      // Ensure proper conversion from BigInt/string to number
+      return lastBlock ? parseInt(lastBlock.toString()) : config.blockchain.deploymentBlock;
     } catch (error) {
       console.error('Failed to get last processed transaction block:', error);
       return config.blockchain.deploymentBlock;
@@ -393,9 +402,18 @@ class PartisiaTransactionIndexer {
     const runtime = Date.now() - this.stats.startTime;
     const runtimeMinutes = runtime / (1000 * 60);
 
+    // Calculate progress from deployment block (0%) to current blockchain head (100%)
+    const totalBlocks = Math.max(1, this.currentBlockHeight - config.blockchain.deploymentBlock);
+    const blocksIndexed = Math.max(0, this.lastProcessedBlock - config.blockchain.deploymentBlock);
+    const progressPercent = (blocksIndexed / totalBlocks * 100);
+
     return {
       ...this.stats,
       lastProcessedBlock: this.lastProcessedBlock,
+      currentBlockHeight: this.currentBlockHeight,
+      deploymentBlock: config.blockchain.deploymentBlock,
+      progressPercent: progressPercent.toFixed(1),
+      blocksRemaining: this.currentBlockHeight - this.lastProcessedBlock,
       runtime,
       runtimeMinutes: runtimeMinutes.toFixed(2),
       txPerMinute: runtimeMinutes > 0 ? (this.stats.transactionsProcessed / runtimeMinutes).toFixed(2) : '0',

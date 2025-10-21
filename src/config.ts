@@ -5,7 +5,7 @@ export default {
     contractAddress: process.env.LS_CONTRACT || '02fc82abf81cbb36acfe196faa1ad49ddfa7abdda6',
     deploymentBlock: parseInt(process.env.DEPLOYMENT_BLOCK || '10682802'),
     deploymentTx: process.env.DEPLOYMENT_TX || 'd20bdb67fd5e52f21e2229a7fc82abf81cbb36acfe196faa1ad49ddfa7abdda6',
-    deploymentTimestamp: new Date('2025-06-19T13:48:00Z'),
+    deploymentTimestamp: new Date(1750315778890), // Block 10682802 production time (2025-06-19T06:49:38.890Z)
   },
   api: {
     corsOrigins: process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(',') : ['https://partisia.subgraph.romenet.io'],

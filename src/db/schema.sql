@@ -6,12 +6,26 @@ CREATE TABLE contract_states (
   block_number BIGINT PRIMARY KEY,
   timestamp TIMESTAMP NOT NULL,
   -- Frequently changing fields (store every change)
-  total_pool_stake_token TEXT NOT NULL,
-  total_pool_liquid TEXT NOT NULL,
+  total_pool_stake_token NUMERIC(40,0) NOT NULL,
+  total_pool_liquid NUMERIC(40,0) NOT NULL,
   exchange_rate DECIMAL(20,10) NOT NULL,
-  stake_token_balance TEXT NOT NULL,
-  buy_in_percentage TEXT NOT NULL,
-  buy_in_enabled BOOLEAN DEFAULT false NOT NULL
+  stake_token_balance NUMERIC(40,0) NOT NULL,
+  buy_in_percentage NUMERIC(10,4) NOT NULL,
+  buy_in_enabled BOOLEAN DEFAULT false NOT NULL,
+  -- Denormalized fields for performance (duplicated from sparse tables)
+  token_for_staking TEXT,
+  staking_responsible TEXT,
+  administrator TEXT,
+  length_of_cooldown_period BIGINT,
+  length_of_redeem_period BIGINT,
+  amount_of_buy_in_locked_stake_tokens NUMERIC(40,0),
+  token_name TEXT,
+  token_symbol TEXT,
+  token_decimals INTEGER,
+  pending_unlocks_count INTEGER DEFAULT 0,
+  buy_in_tokens_count INTEGER DEFAULT 0,
+  total_pending_unlock_amount NUMERIC(40,0) DEFAULT 0,
+  total_smpc_value_usd DECIMAL(20,8) DEFAULT 0
 );
 
 -- Governance changes - only store when they actually change
@@ -33,11 +47,11 @@ CREATE TABLE token_metadata (
 -- Protocol parameters - only store when they change
 CREATE TABLE protocol_parameters (
   block_number BIGINT PRIMARY KEY REFERENCES contract_states(block_number),
-  length_of_cooldown_period TEXT,
-  length_of_redeem_period TEXT,
-  buy_in_percentage TEXT,
+  length_of_cooldown_period BIGINT,
+  length_of_redeem_period BIGINT,
+  buy_in_percentage NUMERIC(10,4),
   buy_in_enabled BOOLEAN,
-  amount_of_buy_in_locked_stake_tokens TEXT
+  amount_of_buy_in_locked_stake_tokens NUMERIC(40,0)
 );
 
 -- User activity metrics - only store when non-zero
@@ -45,7 +59,7 @@ CREATE TABLE user_activity (
   block_number BIGINT PRIMARY KEY REFERENCES contract_states(block_number),
   pending_unlocks_count INTEGER,
   buy_in_tokens_count INTEGER,
-  total_pending_unlock_amount TEXT
+  total_pending_unlock_amount NUMERIC(40,0)
 );
 
 -- Current state view - combines latest values from all sparse tables
@@ -106,24 +120,24 @@ CREATE TABLE current_state (
   id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
   block_number BIGINT NOT NULL,
   timestamp TIMESTAMP NOT NULL,
-  total_pool_stake_token TEXT NOT NULL,
-  total_pool_liquid TEXT NOT NULL,
+  total_pool_stake_token NUMERIC(40,0) NOT NULL,
+  total_pool_liquid NUMERIC(40,0) NOT NULL,
   exchange_rate DECIMAL(20,10) NOT NULL,
-  stake_token_balance TEXT NOT NULL,
+  stake_token_balance NUMERIC(40,0) NOT NULL,
   -- Sparse fields will be populated from latest values
   token_for_staking TEXT,
   staking_responsible TEXT,
   administrator TEXT,
-  length_of_cooldown_period TEXT,
-  length_of_redeem_period TEXT,
-  amount_of_buy_in_locked_stake_tokens TEXT,
+  length_of_cooldown_period BIGINT,
+  length_of_redeem_period BIGINT,
+  amount_of_buy_in_locked_stake_tokens NUMERIC(40,0),
   token_name TEXT,
   token_symbol TEXT,
   token_decimals INTEGER,
   pending_unlocks_count INTEGER DEFAULT 0,
   buy_in_tokens_count INTEGER DEFAULT 0,
-  total_pending_unlock_amount TEXT DEFAULT '0',
-  buy_in_percentage TEXT,
+  total_pending_unlock_amount NUMERIC(40,0) DEFAULT 0,
+  buy_in_percentage NUMERIC(10,4),
   buy_in_enabled BOOLEAN
 );
 
@@ -134,20 +148,20 @@ CREATE TABLE transactions (
   timestamp TIMESTAMP NOT NULL,
   action TEXT NOT NULL,
   sender TEXT NOT NULL,
-  amount TEXT,
+  amount NUMERIC(40,0),
   metadata JSONB
 );
 
 CREATE TABLE protocol_rewards (
   id SERIAL PRIMARY KEY,
   block_number BIGINT NOT NULL,
-  amount TEXT NOT NULL,
+  amount NUMERIC(40,0) NOT NULL,
   timestamp TIMESTAMP NOT NULL
 );
 
 CREATE TABLE users (
   address TEXT PRIMARY KEY,
-  balance TEXT NOT NULL DEFAULT '0',
+  balance NUMERIC(40,0) NOT NULL DEFAULT 0,
   first_seen TIMESTAMP NOT NULL DEFAULT NOW(),
   last_seen TIMESTAMP NOT NULL DEFAULT NOW(),
   last_block BIGINT
@@ -194,3 +208,36 @@ CREATE TABLE IF NOT EXISTS block_mappings (
 
 CREATE INDEX idx_block_mappings_block_time ON block_mappings(block_time);
 CREATE INDEX idx_block_mappings_cached_at ON block_mappings(cached_at DESC);
+
+-- Block checkpoint system for verification and gap detection
+-- Tracks every successfully processed block to detect missing data
+CREATE TABLE IF NOT EXISTS indexed_blocks (
+  block_number BIGINT PRIMARY KEY,
+  indexed_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  processing_time_ms INTEGER,
+  has_state_data BOOLEAN NOT NULL DEFAULT false
+);
+
+CREATE INDEX IF NOT EXISTS idx_indexed_blocks_indexed_at ON indexed_blocks(indexed_at);
+
+-- Gap detection function: finds missing blocks in indexed range
+CREATE OR REPLACE FUNCTION find_indexed_gaps(start_block BIGINT, end_block BIGINT)
+RETURNS TABLE(gap_start BIGINT, gap_end BIGINT, gap_size BIGINT) AS $$
+BEGIN
+  RETURN QUERY
+  WITH blocks_with_next AS (
+    SELECT
+      block_number,
+      LEAD(block_number) OVER (ORDER BY block_number) as next_block
+    FROM indexed_blocks
+    WHERE block_number BETWEEN start_block AND end_block
+  )
+  SELECT
+    block_number + 1 AS gap_start,
+    next_block - 1 AS gap_end,
+    next_block - block_number - 1 AS gap_size
+  FROM blocks_with_next
+  WHERE next_block - block_number > 1
+  ORDER BY block_number;
+END;
+$$ LANGUAGE plpgsql;

@@ -119,12 +119,12 @@ export function createAnalyticsRouter(): Router {
 
       const dailyData = result.rows.map(row => ({
         date: row.date,
-        firstBlock: parseInt(row.first_block),
-        lastBlock: parseInt(row.last_block),
+        firstBlock: parseInt(row.first_block.toString()),
+        lastBlock: parseInt(row.last_block.toString()),
         lowRate: parseFloat(row.low_rate),
         highRate: parseFloat(row.high_rate),
         avgRate: parseFloat(row.avg_rate),
-        sampleCount: parseInt(row.sample_count)
+        sampleCount: parseInt(row.sample_count.toString())
       }));
 
       res.apiSuccess({
@@ -181,6 +181,10 @@ export function createAnalyticsRouter(): Router {
       const totalStaked = BigInt(current.rows[0]?.total_pool_stake_token || '0');
       const totalLiquid = BigInt(current.rows[0]?.total_pool_liquid || '0');
 
+      // Calculate USD values using BigInt division
+      const stakedMpc = Number(totalStaked / 1_000_000n) + Number(totalStaked % 1_000_000n) / 1_000_000;
+      const liquidMpc = Number(totalLiquid / 1_000_000n) + Number(totalLiquid % 1_000_000n) / 1_000_000;
+
       res.apiSuccess({
         price: {
           mpcUsd: currentPrice,
@@ -188,11 +192,11 @@ export function createAnalyticsRouter(): Router {
         },
         tvl: {
           tokens: totalStaked.toString(),
-          usd: (Number(totalStaked) / 1e6 * currentPrice).toFixed(2)
+          usd: (stakedMpc * currentPrice).toFixed(2)
         },
         liquidSupply: {
           tokens: totalLiquid.toString(),
-          usd: (Number(totalLiquid) / 1e6 * currentPrice).toFixed(2)
+          usd: (liquidMpc * currentPrice).toFixed(2)
         },
         exchangeRate: current.rows[0]?.exchange_rate,
         currentBlock: current.rows[0]?.block_number

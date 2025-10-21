@@ -13,6 +13,37 @@ function validateNumericInput(value: string | undefined, min: number, max: numbe
 export function createPricesRouter(): Router {
   const router = Router();
 
+  // Base info endpoint
+  router.get('/', async (req, res, next) => {
+    try {
+      const stats = await db.query(`
+        SELECT
+          COUNT(*) as total_records,
+          MIN(timestamp) as oldest_price,
+          MAX(timestamp) as newest_price,
+          source
+        FROM price_history
+        GROUP BY source
+      `);
+
+      res.apiSuccess({
+        description: 'MPC Token Price API',
+        endpoints: {
+          '/current': 'Get latest MPC price',
+          '/history?hours=N': 'Get historical prices (default: 24h, max: 8760h/1yr)'
+        },
+        stats: stats.rows.map(row => ({
+          source: row.source,
+          totalRecords: parseInt(row.total_records),
+          oldestPrice: row.oldest_price,
+          newestPrice: row.newest_price
+        }))
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   // Get current MPC price
   router.get('/current', async (req, res, next) => {
     try {

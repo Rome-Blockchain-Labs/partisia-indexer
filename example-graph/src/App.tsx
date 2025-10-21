@@ -1,7 +1,6 @@
 import React from 'react'
-import InteractiveStakingChart from './InteractiveStakingChart'
-import HistoricalExchangeRatesChart from './HistoricalExchangeRatesChart'
-import AdvancedDashboard from './AdvancedDashboard'
+import PriceComparisonChart from './PriceComparisonChart'
+import RewardsChart from './RewardsChart'
 import TransactionsPanel from './TransactionsPanel'
 import IndexingProgress from './IndexingProgress'
 import './App.css'
@@ -22,14 +21,11 @@ function App() {
           {/* Indexing Progress - only shows while indexing */}
           <IndexingProgress />
 
-          {/* Interactive Chart Component */}
-          <InteractiveStakingChart />
+          {/* Rewards & APY Chart */}
+          <RewardsChart />
 
-          {/* Historical Exchange Rates Chart */}
-          <HistoricalExchangeRatesChart />
-
-          {/* Advanced Dashboard with Multiple Views */}
-          <AdvancedDashboard />
+          {/* Price Comparison Chart: MPC vs sMPC */}
+          <PriceComparisonChart />
 
           {/* Recent Transactions Panel */}
           <TransactionsPanel />

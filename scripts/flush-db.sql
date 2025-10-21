@@ -2,12 +2,18 @@
 -- Keep schema intact
 
 TRUNCATE TABLE contract_states CASCADE;
+TRUNCATE TABLE governance_changes CASCADE;
+TRUNCATE TABLE token_metadata CASCADE;
+TRUNCATE TABLE protocol_parameters CASCADE;
+TRUNCATE TABLE user_activity CASCADE;
 TRUNCATE TABLE current_state CASCADE;
 TRUNCATE TABLE mpc_prices CASCADE;
 TRUNCATE TABLE price_history CASCADE;
 TRUNCATE TABLE protocol_rewards CASCADE;
 TRUNCATE TABLE transactions CASCADE;
 TRUNCATE TABLE users CASCADE;
+TRUNCATE TABLE block_mappings CASCADE;
+TRUNCATE TABLE indexed_blocks CASCADE;
 
 -- Reset current state with all required columns
 INSERT INTO current_state (id, block_number, exchange_rate, total_pool_stake_token, total_pool_liquid, stake_token_balance, buy_in_percentage, buy_in_enabled, timestamp)

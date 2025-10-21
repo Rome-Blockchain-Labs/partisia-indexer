@@ -26,6 +26,11 @@ export function createContractRouter(): Router {
       const priceUsd = parseFloat(price.rows[0]?.price_usd) || 0;
       const staked = BigInt(s.total_pool_stake_token || '0');
       const liquid = BigInt(s.total_pool_liquid || '0');
+      const stakeBalance = BigInt(s.stake_token_balance || '0');
+
+      // Calculate TVL using BigInt division
+      const stakedMpc = Number(staked / 1_000_000n) + Number(staked % 1_000_000n) / 1_000_000;
+      const tvlUsd = (stakedMpc * priceUsd).toFixed(2);
 
       res.apiSuccess({
         blockNumber: parseInt(s.block_number),
@@ -33,10 +38,10 @@ export function createContractRouter(): Router {
         exchangeRate: parseFloat(s.exchange_rate),
         totalPoolStakeToken: staked.toString(),
         totalPoolLiquid: liquid.toString(),
-        stakeTokenBalance: s.stake_token_balance,
+        stakeTokenBalance: stakeBalance.toString(),
         buyInPercentage: parseFloat(s.buy_in_percentage || '0'),
         buyInEnabled: !!s.buy_in_enabled,
-        tvlUsd: (Number(staked) / 1e6 * priceUsd).toFixed(2)
+        tvlUsd
       });
     } catch (error) {
       next(error);

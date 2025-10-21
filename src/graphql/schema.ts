@@ -11,7 +11,8 @@ export const schema = createSchema({
       currentState: CurrentState!
       exchangeRate: ExchangeRate!
       priceHistory(hours: Int = 24): [Price!]!
-      dailyRewardEstimate: DailyReward!
+      dailyRewards(days: Int = 30, granularity: String): [DailyRewardActual!]!
+      dailyHistory(days: Int = 30, granularity: String): [DailyData!]!
     }
     
     type ContractState {
@@ -64,13 +65,28 @@ export const schema = createSchema({
       volume: Float
     }
 
-    type DailyReward {
-      totalSmpcValueUsd: Float!
-      currentApy: Float!
-      dailyRewardUsd: Float!
-      expectedDailyRewardUsd: Float!
-      lastRewardTimestamp: String
-      daysSinceLastReward: Float
+    type DailyRewardActual {
+      date: String!
+      blockNumber: String!
+      rewardAmountMpc: String!
+      rewardAmountUsd: Float!
+      exchangeRateChange: Float!
+      dailyRateMpc: Float!
+      dailyRateUsd: Float!
+      apyMpc: Float!
+      apyUsd: Float!
+    }
+
+    type DailyData {
+      date: String!
+      blockNumber: String!
+      exchangeRate: Float!
+      mpcPrice: Float
+      smpcPrice: Float
+      totalLiquid: String!
+      totalStaked: String!
+      marketCap: Float
+      poolSize: Float
     }
     
     input StateFilter {
@@ -281,12 +297,16 @@ export const schema = createSchema({
         const staked = BigInt(s?.total_pool_stake_token || '0')
         const liquid = BigInt(s?.total_pool_liquid || '0')
 
+        // Calculate TVL using BigInt division to avoid precision loss
+        const stakedMpc = Number(staked / 1_000_000n) + Number(staked % 1_000_000n) / 1_000_000
+        const tvlUsd = (stakedMpc * p).toFixed(2)
+
         return {
           blockNumber: s?.block_number || '0',
           exchangeRate: s?.exchange_rate || '1.0',
           totalStaked: staked.toString(),
           totalLiquid: liquid.toString(),
-          tvlUsd: (Number(staked) / 1e6 * p).toFixed(2),
+          tvlUsd,
           totalSmpcValueUsd: s?.total_smpc_value_usd ? parseFloat(s.total_smpc_value_usd) : null
         }
       },
@@ -323,37 +343,220 @@ export const schema = createSchema({
         }))
       },
 
-      dailyRewardEstimate: async () => {
-        // Get current state and latest reward transaction
-        const [state, lastReward] = await Promise.all([
-          db.query('SELECT total_smpc_value_usd FROM current_state WHERE id = 1'),
-          db.query(`SELECT timestamp FROM transactions WHERE action = 'accrueRewards' ORDER BY timestamp DESC LIMIT 1`)
-        ])
+      dailyRewards: async (_: any, { days, granularity }: any) => {
+        const requestedDays = days || 30
 
-        const totalSmpcValueUsd = parseFloat(state.rows[0]?.total_smpc_value_usd) || 0
-        const currentApy = 4.5 // 4.5% APY
-        const dailyRate = currentApy / 365 / 100
-
-        // Expected daily reward based on APY
-        const expectedDailyRewardUsd = totalSmpcValueUsd * dailyRate
-
-        // Calculate days since last reward
-        const lastRewardTimestamp = lastReward.rows[0]?.timestamp
-        const daysSinceLastReward = lastRewardTimestamp
-          ? (Date.now() - new Date(lastRewardTimestamp).getTime()) / (1000 * 60 * 60 * 24)
-          : 0
-
-        // Actual accumulated reward (should match expected)
-        const dailyRewardUsd = expectedDailyRewardUsd * (daysSinceLastReward || 1)
-
-        return {
-          totalSmpcValueUsd,
-          currentApy,
-          dailyRewardUsd,
-          expectedDailyRewardUsd,
-          lastRewardTimestamp: lastRewardTimestamp?.toISOString() || null,
-          daysSinceLastReward
+        // Determine granularity: manual override or auto-select
+        let selectedGranularity = granularity
+        if (!selectedGranularity) {
+          // Auto-select based on time range
+          if (requestedDays <= 30) selectedGranularity = 'daily'
+          else if (requestedDays <= 180) selectedGranularity = 'weekly'
+          else selectedGranularity = 'monthly'
         }
+
+        // Build query based on granularity
+        let query: string
+
+        switch (selectedGranularity) {
+          case 'daily':
+            query = `
+              SELECT
+                DATE(timestamp) as date,
+                block_number,
+                exchange_rate,
+                total_pool_liquid,
+                timestamp
+              FROM contract_states
+              WHERE timestamp > NOW() - INTERVAL '1 day' * $1
+              ORDER BY DATE(timestamp) ASC, timestamp DESC
+            `
+            break
+
+          case 'weekly':
+            query = `
+              SELECT
+                DATE_TRUNC('week', timestamp) as date,
+                (array_agg(block_number ORDER BY timestamp DESC))[1] as block_number,
+                AVG(exchange_rate) as exchange_rate,
+                AVG(total_pool_liquid::numeric) as total_pool_liquid,
+                MAX(timestamp) as timestamp
+              FROM contract_states
+              WHERE timestamp > NOW() - INTERVAL '1 day' * $1
+              GROUP BY DATE_TRUNC('week', timestamp)
+              ORDER BY date ASC
+            `
+            break
+
+          case 'monthly':
+            query = `
+              SELECT
+                DATE_TRUNC('month', timestamp) as date,
+                (array_agg(block_number ORDER BY timestamp DESC))[1] as block_number,
+                AVG(exchange_rate) as exchange_rate,
+                AVG(total_pool_liquid::numeric) as total_pool_liquid,
+                MAX(timestamp) as timestamp
+              FROM contract_states
+              WHERE timestamp > NOW() - INTERVAL '1 day' * $1
+              GROUP BY DATE_TRUNC('month', timestamp)
+              ORDER BY date ASC
+            `
+            break
+
+          default:
+            throw new Error(`Invalid granularity: ${selectedGranularity}. Use 'daily', 'weekly', or 'monthly'.`)
+        }
+
+        const states = await db.query(query, [requestedDays + 1])
+
+        if (states.rows.length < 2) {
+          return []
+        }
+
+        // Get MPC price for each day
+        const results = []
+
+        for (let i = 1; i < states.rows.length; i++) {
+          const current = states.rows[i]
+          const previous = states.rows[i - 1]
+
+          const currentRate = parseFloat(current.exchange_rate)
+          const previousRate = parseFloat(previous.exchange_rate)
+          const rateChange = currentRate - previousRate
+
+          // Get MPC prices for both days
+          const [currentPriceResult, previousPriceResult] = await Promise.all([
+            db.query(`
+              SELECT price_usd
+              FROM price_history
+              WHERE timestamp <= $1
+              ORDER BY timestamp DESC
+              LIMIT 1
+            `, [current.timestamp]),
+            db.query(`
+              SELECT price_usd
+              FROM price_history
+              WHERE timestamp <= $1
+              ORDER BY timestamp DESC
+              LIMIT 1
+            `, [previous.timestamp])
+          ])
+
+          const currentMpcPrice = parseFloat(currentPriceResult.rows[0]?.price_usd) || 0
+          const previousMpcPrice = parseFloat(previousPriceResult.rows[0]?.price_usd) || 0
+
+          // Calculate reward using: reward = rate_change × total_pool_liquid
+          const liquidBigInt = BigInt(current.total_pool_liquid)
+          const liquidMpc = Number(liquidBigInt / 1_000_000n) + Number(liquidBigInt % 1_000_000n) / 1_000_000
+          const rewardMpc = rateChange * liquidMpc
+
+          // Calculate MPC-denominated returns (protocol performance)
+          const dailyRateMpc = previousRate !== 0 ? rateChange / previousRate : 0
+          const apyMpc = previousRate !== 0
+            ? (Math.pow(1 + dailyRateMpc, 365) - 1) * 100
+            : 0
+
+          // Calculate USD-denominated returns (actual portfolio return)
+          const currentSmpcPrice = currentRate * currentMpcPrice
+          const previousSmpcPrice = previousRate * previousMpcPrice
+          const dailyRateUsd = previousSmpcPrice !== 0
+            ? (currentSmpcPrice - previousSmpcPrice) / previousSmpcPrice
+            : 0
+          const apyUsd = previousSmpcPrice !== 0
+            ? (Math.pow(1 + dailyRateUsd, 365) - 1) * 100
+            : 0
+
+          results.push({
+            date: new Date(current.date).toISOString().split('T')[0], // Format as YYYY-MM-DD
+            blockNumber: current.block_number.toString(),
+            rewardAmountMpc: rewardMpc.toFixed(6),
+            rewardAmountUsd: rewardMpc * currentMpcPrice,
+            exchangeRateChange: rateChange,
+            dailyRateMpc,
+            dailyRateUsd,
+            apyMpc,
+            apyUsd
+          })
+        }
+
+        return results
+      },
+
+      dailyHistory: async (_: any, { days }: any) => {
+        // Get the timestamp range of our indexed contract states
+        const stateRange = await db.query(`
+          SELECT
+            MIN(timestamp) as min_timestamp,
+            MAX(timestamp) as max_timestamp
+          FROM contract_states
+        `)
+
+        const minTimestamp = stateRange.rows[0]?.min_timestamp
+        const maxTimestamp = stateRange.rows[0]?.max_timestamp
+
+        if (!minTimestamp || !maxTimestamp) {
+          return []
+        }
+
+        // Get price history for the time range we have contract data
+        // Limit to the requested days, but count backwards from our latest data (not from NOW)
+        const cutoffTimestamp = new Date(maxTimestamp.getTime() - (days * 24 * 60 * 60 * 1000))
+        const prices = await db.query(`
+          SELECT timestamp, price_usd
+          FROM price_history
+          WHERE timestamp >= $1
+            AND timestamp <= $2
+            AND timestamp >= $3
+          ORDER BY timestamp ASC
+        `, [minTimestamp, maxTimestamp, cutoffTimestamp])
+
+        if (prices.rows.length === 0) {
+          return []
+        }
+
+        // Match each price point with the contract state at that time
+        const results = []
+
+        for (const priceRow of prices.rows) {
+          // Find the contract state at or before this timestamp
+          const state = await db.query(`
+            SELECT block_number, exchange_rate, total_pool_liquid, total_pool_stake_token
+            FROM contract_states
+            WHERE timestamp <= $1
+            ORDER BY timestamp DESC
+            LIMIT 1
+          `, [priceRow.timestamp])
+
+          if (state.rows.length > 0) {
+            const s = state.rows[0]
+            const mpcPrice = parseFloat(priceRow.price_usd)
+            const totalLiquid = s.total_pool_liquid
+            const totalStaked = s.total_pool_stake_token
+            // Use BigInt for precision-safe division
+            const liquidBigInt = BigInt(totalLiquid)
+            const poolSizeTokens = Number(liquidBigInt / 1_000_000n) + Number(liquidBigInt % 1_000_000n) / 1_000_000
+
+            // Exchange rate should be from DB (1.0 at deployment, increases with rewards)
+            const exchangeRate = parseFloat(s.exchange_rate) || 1.0
+            const smpcPrice = mpcPrice * exchangeRate
+            const marketCap = poolSizeTokens * smpcPrice
+            const poolSize = poolSizeTokens
+
+            results.push({
+              date: new Date(priceRow.timestamp).toISOString(),
+              blockNumber: s.block_number.toString(),
+              exchangeRate,
+              mpcPrice,
+              smpcPrice,
+              totalLiquid,
+              totalStaked,
+              marketCap,
+              poolSize
+            })
+          }
+        }
+
+        return results
       }
     }
   }
