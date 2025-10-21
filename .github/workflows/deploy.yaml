@@ -140,7 +140,7 @@ jobs:
 
             # Reset database tables based on mode
             if [[ "${RESET_DB}" == "protocol" ]]; then
-              echo "⚠️ Resetting protocol tables for resync (keeping prices)"
+              echo "⚠️ Resetting protocol tables for resync (keeping prices and block_mappings)"
               docker exec -i \$(docker compose -f docker-compose.${{ env.ENVIRONMENT }}.yaml ps -q postgres) \
                 psql -U indexer -d ls_indexer <<SQL
           TRUNCATE contract_states RESTART IDENTITY CASCADE;
@@ -148,9 +148,10 @@ jobs:
           TRUNCATE transactions RESTART IDENTITY CASCADE;
           TRUNCATE protocol_rewards RESTART IDENTITY CASCADE;
           TRUNCATE users RESTART IDENTITY CASCADE;
+          TRUNCATE indexed_blocks RESTART IDENTITY CASCADE;
           SQL
             elif [[ "${RESET_DB}" == "all" ]]; then
-              echo "💥 Flushing ALL database tables (complete reset)"
+              echo "💥 Flushing ALL database tables (complete reset, keeping block_mappings)"
               docker exec -i \$(docker compose -f docker-compose.${{ env.ENVIRONMENT }}.yaml ps -q postgres) \
                 psql -U indexer -d ls_indexer <<SQL
           TRUNCATE contract_states RESTART IDENTITY CASCADE;
@@ -160,6 +161,7 @@ jobs:
           TRUNCATE users RESTART IDENTITY CASCADE;
           TRUNCATE price_history RESTART IDENTITY CASCADE;
           TRUNCATE mpc_prices RESTART IDENTITY CASCADE;
+          TRUNCATE indexed_blocks RESTART IDENTITY CASCADE;
           SQL
             fi
 

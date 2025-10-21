@@ -492,12 +492,16 @@ class PartisiaTransactionIndexer {
 
   getStats() {
     const runtime = Date.now() - this.stats.startTime;
+    const runtimeSeconds = runtime / 1000;
     const runtimeMinutes = runtime / (1000 * 60);
 
     // Calculate progress from deployment block (0%) to current blockchain head (100%)
     const totalBlocks = Math.max(1, this.currentBlockHeight - config.blockchain.deploymentBlock);
     const blocksIndexed = Math.max(0, this.lastProcessedBlock - config.blockchain.deploymentBlock);
     const progressPercent = (blocksIndexed / totalBlocks * 100);
+
+    // Calculate blocks per second from actual progress
+    const blocksPerSecond = runtimeSeconds > 0 ? blocksIndexed / runtimeSeconds : 0;
 
     return {
       ...this.stats,
@@ -510,7 +514,8 @@ class PartisiaTransactionIndexer {
       runtime,
       runtimeMinutes: runtimeMinutes.toFixed(2),
       txPerMinute: runtimeMinutes > 0 ? (this.stats.transactionsProcessed / runtimeMinutes).toFixed(2) : '0',
-      blocksPerMinute: runtimeMinutes > 0 ? (this.stats.blocksScanned / runtimeMinutes).toFixed(2) : '0'
+      blocksPerMinute: runtimeMinutes > 0 ? (this.stats.blocksScanned / runtimeMinutes).toFixed(2) : '0',
+      blocksPerSecond: blocksPerSecond
     };
   }
 
