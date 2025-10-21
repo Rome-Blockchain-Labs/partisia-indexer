@@ -340,7 +340,18 @@ export const schema = createSchema({
       },
 
       dailyRewards: async (_: any, { days, granularity }: any) => {
-        const requestedDays = days || 30
+        // Limit to 90 days max to prevent timeout (N+1 query problem)
+        const requestedDays = Math.min(days || 30, 90)
+
+        // Check if we have enough data
+        const countResult = await db.query('SELECT COUNT(*) as count FROM contract_states')
+        const stateCount = parseInt(countResult.rows[0]?.count || '0')
+
+        // Need at least 2 states to calculate rewards
+        if (stateCount < 2) {
+          console.log(`Not enough data for dailyRewards (${stateCount} states)`)
+          return []
+        }
 
         // Determine granularity: manual override or auto-select
         let selectedGranularity = granularity
