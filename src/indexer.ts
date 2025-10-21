@@ -623,11 +623,12 @@ class PartisiaIndexer {
       batchContext.currentState = stateRecord;
 
       console.log(`📝 Queued significant state at block ${blockNumber}: stake=${currentState.stakeTokenBalance}, rate=${currentState.exchangeRate}`);
+
+      // Only store sparse data for blocks that have contract_states (fixes FK constraint)
+      await this.storeSparseData(blockNumber, state, pendingUnlocksCount, buyInTokensCount, totalPendingUnlockAmount, batchContext);
     } else if (shouldStore) {
       console.log(`⏩ Skipping minor change at block ${blockNumber} (no significant change)`);
     }
-
-    await this.storeSparseData(blockNumber, state, pendingUnlocksCount, buyInTokensCount, totalPendingUnlockAmount, batchContext);
 
     if (blockNumber >= this.lastIndexedBlock - 100) {
       batchContext.latestFullState = {
