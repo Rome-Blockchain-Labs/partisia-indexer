@@ -294,6 +294,9 @@ class PartisiaIndexer {
   private async batchWriteChanges(context: any) {
     // Insert contract_states first (required for foreign key constraints)
     if (context.contractStates.length > 0) {
+      const blocks = context.contractStates.map((s: any) => s.blockNumber).join(', ');
+      console.log(`🔹 Inserting ${context.contractStates.length} contract_states: blocks ${blocks}`);
+
       const values = context.contractStates.map((s: any, i: number) => {
         const offset = i * 8;
         return `($${offset+1}, $${offset+2}, $${offset+3}, $${offset+4}, $${offset+5}, $${offset+6}, $${offset+7}, $${offset+8})`;
@@ -320,9 +323,12 @@ class PartisiaIndexer {
           buy_in_percentage = EXCLUDED.buy_in_percentage,
           buy_in_enabled = EXCLUDED.buy_in_enabled
       `, params);
+
+      console.log(`✅ contract_states inserted successfully`);
     }
 
     // Now insert sparse tables (can run in parallel since contract_states exists)
+    console.log(`🔹 Starting sparse table inserts: ${context.governanceChanges.length} governance, ${context.metadataChanges.length} metadata, ${context.parameterChanges.length} params`);
     const promises = [];
 
     if (context.governanceChanges.length > 0) {
