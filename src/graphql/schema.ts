@@ -368,7 +368,7 @@ export const schema = createSchema({
         switch (selectedGranularity) {
           case 'daily':
             query = `
-              SELECT
+              SELECT DISTINCT ON (DATE(timestamp))
                 DATE(timestamp) as date,
                 block_number,
                 exchange_rate,
