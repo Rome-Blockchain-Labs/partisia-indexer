@@ -11,16 +11,19 @@ interface Transaction {
 const TransactionsPanel: FC = () => {
   const [transactions, setTransactions] = useState<Transaction[]>([])
   const [loading, setLoading] = useState(true)
-  const [filter, setFilter] = useState<'all' | 'accrueRewards' | 'stake' | 'unstake'>('all')
+  const [filter, setFilter] = useState<'all' | 'submit' | 'requestUnlock' | 'withdraw' | 'accrueRewards' | 'redeem' | 'approve' | 'transfer'>('all')
+  const [currentPage, setCurrentPage] = useState(1)
+  const pageSize = 20
 
   useEffect(() => {
     const fetchTransactions = async () => {
       setLoading(true)
       try {
+        const skip = (currentPage - 1) * pageSize
         const query = {
           query: `
-            query GetTransactions($first: Int!, $where: TransactionFilter) {
-              transactions(first: $first, where: $where, orderBy: TIMESTAMP_DESC) {
+            query GetTransactions($first: Int!, $skip: Int!, $where: TransactionFilter) {
+              transactions(first: $first, skip: $skip, where: $where, orderBy: TIMESTAMP_DESC) {
                 txHash
                 action
                 timestamp
@@ -29,7 +32,8 @@ const TransactionsPanel: FC = () => {
             }
           `,
           variables: {
-            first: 20,
+            first: pageSize,
+            skip,
             where: filter === 'all' ? {} : { action: filter }
           }
         }
@@ -52,6 +56,11 @@ const TransactionsPanel: FC = () => {
     }
 
     fetchTransactions()
+  }, [filter, currentPage])
+
+  // Reset to page 1 when filter changes
+  useEffect(() => {
+    setCurrentPage(1)
   }, [filter])
 
   const formatTimestamp = (timestamp: string) => {
@@ -65,10 +74,37 @@ const TransactionsPanel: FC = () => {
 
   const getActionColor = (action: string) => {
     switch (action) {
+      case 'submit': return 'bg-blue-100 text-blue-800'
+      case 'deposit': return 'bg-blue-100 text-blue-800'
+      case 'requestUnlock': return 'bg-orange-100 text-orange-800'
+      case 'withdraw': return 'bg-red-100 text-red-800'
+      case 'redeem': return 'bg-red-100 text-red-800'
       case 'accrueRewards': return 'bg-green-100 text-green-800'
-      case 'stake': return 'bg-blue-100 text-blue-800'
-      case 'unstake': return 'bg-red-100 text-red-800'
+      case 'transfer': return 'bg-purple-100 text-purple-800'
+      case 'transferFrom': return 'bg-purple-100 text-purple-800'
+      case 'approve': return 'bg-indigo-100 text-indigo-800'
+      case 'changeBuyIn': return 'bg-yellow-100 text-yellow-800'
+      case 'disableBuyIn': return 'bg-yellow-100 text-yellow-800'
+      case 'cleanUpPendingUnlocks': return 'bg-gray-100 text-gray-800'
       default: return 'bg-gray-100 text-gray-800'
+    }
+  }
+
+  const getActionLabel = (action: string) => {
+    switch (action) {
+      case 'submit': return 'Stake'
+      case 'deposit': return 'Deposit'
+      case 'requestUnlock': return 'Unstake'
+      case 'withdraw': return 'Withdraw'
+      case 'redeem': return 'Redeem'
+      case 'accrueRewards': return 'Rewards'
+      case 'transfer': return 'Transfer'
+      case 'transferFrom': return 'Transfer From'
+      case 'approve': return 'Approve'
+      case 'changeBuyIn': return 'Change Buy-In'
+      case 'disableBuyIn': return 'Disable Buy-In'
+      case 'cleanUpPendingUnlocks': return 'Cleanup'
+      default: return action
     }
   }
 
@@ -77,18 +113,27 @@ const TransactionsPanel: FC = () => {
       <div className="flex justify-between items-center mb-6">
         <h2 className="text-xl font-bold">Recent Transactions</h2>
 
-        <div className="flex space-x-2">
-          {['all', 'accrueRewards', 'stake', 'unstake'].map((filterOption) => (
+        <div className="flex flex-wrap gap-2">
+          {[
+            { value: 'all', label: 'All' },
+            { value: 'submit', label: 'Stake' },
+            { value: 'requestUnlock', label: 'Unstake' },
+            { value: 'withdraw', label: 'Withdraw' },
+            { value: 'accrueRewards', label: 'Rewards' },
+            { value: 'redeem', label: 'Redeem' },
+            { value: 'approve', label: 'Approve' },
+            { value: 'transfer', label: 'Transfer' }
+          ].map((filterOption) => (
             <button
-              key={filterOption}
-              onClick={() => setFilter(filterOption as any)}
+              key={filterOption.value}
+              onClick={() => setFilter(filterOption.value as any)}
               className={`px-3 py-1 text-sm rounded-md transition-colors ${
-                filter === filterOption
+                filter === filterOption.value
                   ? 'bg-blue-600 text-white'
                   : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
               }`}
             >
-              {filterOption === 'all' ? 'All' : filterOption}
+              {filterOption.label}
             </button>
           ))}
         </div>
@@ -112,7 +157,7 @@ const TransactionsPanel: FC = () => {
               >
                 <div className="flex items-center space-x-4">
                   <span className={`px-2 py-1 text-xs font-medium rounded-full ${getActionColor(tx.action)}`}>
-                    {tx.action}
+                    {getActionLabel(tx.action)}
                   </span>
                   <div>
                     <div className="font-mono text-sm">
@@ -140,6 +185,41 @@ const TransactionsPanel: FC = () => {
               </div>
             ))
           )}
+        </div>
+      )}
+
+      {/* Pagination Controls */}
+      {!loading && transactions.length > 0 && (
+        <div className="flex items-center justify-between mt-6 pt-4 border-t">
+          <div className="text-sm text-gray-600">
+            Page {currentPage}
+          </div>
+
+          <div className="flex space-x-2">
+            <button
+              onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+              disabled={currentPage === 1}
+              className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+                currentPage === 1
+                  ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                  : 'bg-blue-600 text-white hover:bg-blue-700'
+              }`}
+            >
+              ← Previous
+            </button>
+
+            <button
+              onClick={() => setCurrentPage(p => p + 1)}
+              disabled={transactions.length < pageSize}
+              className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+                transactions.length < pageSize
+                  ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                  : 'bg-blue-600 text-white hover:bg-blue-700'
+              }`}
+            >
+              Next →
+            </button>
+          </div>
         </div>
       )}
     </div>

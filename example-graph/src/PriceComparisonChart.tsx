@@ -158,7 +158,7 @@ const PriceComparisonChart: FC = () => {
         data: data.map(d => d.mpcPrice),
         borderColor: 'rgb(59, 130, 246)', // Blue
         backgroundColor: 'rgba(59, 130, 246, 0.1)',
-        yAxisID: 'y-price',
+        yAxisID: 'y-mpc',
         tension: 0.4,
         fill: false,
         pointRadius: 0,
@@ -173,7 +173,7 @@ const PriceComparisonChart: FC = () => {
         data: data.map(d => d.smpcPrice),
         borderColor: 'rgb(168, 85, 247)', // Purple
         backgroundColor: 'rgba(168, 85, 247, 0.1)',
-        yAxisID: 'y-price',
+        yAxisID: 'y-mpc',
         tension: 0.4,
         fill: false,
         pointRadius: 0,
@@ -203,7 +203,7 @@ const PriceComparisonChart: FC = () => {
         data: data.map(d => d.marketCap),
         borderColor: 'rgb(249, 115, 22)', // Orange
         backgroundColor: 'rgba(249, 115, 22, 0.1)',
-        yAxisID: 'y-price',
+        yAxisID: 'y-tvl',
         tension: 0.4,
         fill: false,
         pointRadius: 0,
@@ -214,11 +214,11 @@ const PriceComparisonChart: FC = () => {
 
     if (showPoolSize) {
       datasets.push({
-        label: 'Pool Size (MPC)',
-        data: data.map(d => d.poolSize / 1e6), // Convert to millions of MPC
+        label: 'Pool Size (tokens)',
+        data: data.map(d => d.poolSize), // Keep in actual tokens, not millions
         borderColor: 'rgb(236, 72, 153)', // Pink
         backgroundColor: 'rgba(236, 72, 153, 0.1)',
-        yAxisID: 'y-price',
+        yAxisID: 'y-pool',
         tension: 0.4,
         fill: false,
         pointRadius: 0,
@@ -290,10 +290,18 @@ const PriceComparisonChart: FC = () => {
               return `sMPC Price: $${point.smpcPrice.toFixed(4)}`
             } else if (label.includes('Exchange')) {
               return `Exchange Rate: ${point.exchangeRate.toFixed(6)}`
-            } else if (label.includes('TVL')) {
-              return `TVL: $${(point.marketCap / 1e6).toFixed(2)}M`
+            } else if (label.includes('TVL') && !label.includes('Total')) {
+              const tvl = point.marketCap;
+              if (tvl >= 1e6) return `TVL: $${(tvl / 1e6).toFixed(2)}M`;
+              if (tvl >= 1e3) return `TVL: $${(tvl / 1e3).toFixed(1)}K`;
+              return `TVL: $${tvl.toFixed(0)}`;
             } else if (label.includes('Pool Size')) {
-              return `Pool Size: ${(point.poolSize / 1e6).toFixed(2)}M MPC`
+              const pool = point.poolSize;
+              if (pool >= 1e6) return `Pool Size: ${(pool / 1e6).toFixed(2)}M tokens`;
+              if (pool >= 1e3) return `Pool Size: ${(pool / 1e3).toFixed(1)}K tokens`;
+              return `Pool Size: ${pool.toFixed(0)} tokens`;
+            } else if (label.includes('Total Staked')) {
+              return `Total Staked: ${(parseFloat(point.totalStaked) / 1e6).toFixed(2)}M MPC`;
             }
             return ''
           },
@@ -339,13 +347,13 @@ const PriceComparisonChart: FC = () => {
           font: { size: 11 },
         },
       },
-      'y-price': {
+      'y-mpc': {
         type: 'linear',
-        display: showMPC || showSMPC || showMarketCap || showPoolSize,
+        display: showMPC || showSMPC,
         position: 'left',
         title: {
           display: true,
-          text: 'USD',
+          text: 'Price (USD)',
           font: { size: 12, weight: 'bold' },
         },
         grid: {
@@ -354,12 +362,7 @@ const PriceComparisonChart: FC = () => {
         },
         ticks: {
           font: { size: 11 },
-          callback: (value) => {
-            const num = Number(value);
-            if (num >= 1e6) return `$${(num / 1e6).toFixed(1)}M`;
-            if (num >= 1e3) return `$${(num / 1e3).toFixed(1)}K`;
-            return `$${num.toFixed(2)}`;
-          },
+          callback: (value) => `$${Number(value).toFixed(4)}`,
         },
       },
       'y-rate': {
@@ -379,8 +382,53 @@ const PriceComparisonChart: FC = () => {
           callback: (value) => Number(value).toFixed(6),
         },
       },
+      'y-tvl': {
+        type: 'linear',
+        display: showMarketCap || showTVL,
+        position: 'left',
+        title: {
+          display: true,
+          text: 'TVL (USD)',
+          font: { size: 12, weight: 'bold' },
+        },
+        grid: {
+          drawOnChartArea: !showMPC && !showSMPC,
+          color: 'rgba(229, 231, 235, 0.1)',
+        },
+        ticks: {
+          font: { size: 11 },
+          callback: (value) => {
+            const num = Number(value);
+            if (num >= 1e6) return `$${(num / 1e6).toFixed(1)}M`;
+            if (num >= 1e3) return `$${(num / 1e3).toFixed(1)}K`;
+            return `$${num.toFixed(0)}`;
+          },
+        },
+      },
+      'y-pool': {
+        type: 'linear',
+        display: showPoolSize,
+        position: 'right',
+        title: {
+          display: true,
+          text: 'Pool Size (tokens)',
+          font: { size: 12, weight: 'bold' },
+        },
+        grid: {
+          drawOnChartArea: false,
+        },
+        ticks: {
+          font: { size: 11 },
+          callback: (value) => {
+            const num = Number(value);
+            if (num >= 1e6) return `${(num / 1e6).toFixed(2)}M`;
+            if (num >= 1e3) return `${(num / 1e3).toFixed(1)}K`;
+            return num.toFixed(0);
+          },
+        },
+      },
     },
-  }), [data, showMPC, showSMPC, showRate, showMarketCap, showPoolSize])
+  }), [data, showMPC, showSMPC, showRate, showMarketCap, showPoolSize, showTVL])
 
   const resetZoom = () => {
     if (chartRef.current) {

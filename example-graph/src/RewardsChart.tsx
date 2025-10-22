@@ -36,20 +36,19 @@ const DAYS_MAP: Record<TimePeriod, number> = {
   '7d': 7,
   '30d': 30,
   '90d': 90,
-  '1y': 365,
-  '3y': 1095,
-  'all': 1095,
+  '1y': 90,  // Limited to 90 days max by backend
+  '3y': 90,  // Limited to 90 days max by backend
+  'all': 90, // Limited to 90 days max by backend
 }
 
 // Auto-select optimal granularity based on time period
-// Only aggregate when >500 data points to keep detail
 const GRANULARITY_MAP: Record<TimePeriod, Granularity> = {
   '7d': 'daily',    // 7 points
   '30d': 'daily',   // 30 points
   '90d': 'daily',   // 90 points
-  '1y': 'daily',    // 365 points
-  '3y': 'weekly',   // ~157 points
-  'all': 'weekly',  // ~157 points
+  '1y': 'daily',    // 90 points (limited by backend)
+  '3y': 'daily',    // 90 points (limited by backend)
+  'all': 'daily',   // 90 points (limited by backend)
 }
 
 interface RewardData {
@@ -66,7 +65,7 @@ interface RewardData {
 
 const RewardsChart: FC = () => {
   const chartRef = useRef<ChartJS<'line'>>(null)
-  const [timePeriod, setTimePeriod] = useState<TimePeriod>('1y')
+  const [timePeriod, setTimePeriod] = useState<TimePeriod>('30d')
   const [showApyMpc, setShowApyMpc] = useState(true)
   const [showApyUsd, setShowApyUsd] = useState(true)
   const [showDailyRewards, setShowDailyRewards] = useState(false)

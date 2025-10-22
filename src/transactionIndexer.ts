@@ -1,6 +1,7 @@
 import axios from 'axios';
 import config from './config';
 import db from './db/client';
+import { getLiquidStakingActionMap, isLiquidStakingAction } from './utils/abiActionExtractor';
 
 class PartisiaTransactionIndexer {
   private running = false;
@@ -273,24 +274,106 @@ class PartisiaTransactionIndexer {
   }
 
   private async identifyTransactionAction(tx: any): Promise<string | null> {
-    // Analyze transaction content to identify the action
+    // Properly decode ABI-encoded transaction content
     const content = tx.content || '';
 
-    // This is a simplified identification - in a real implementation,
-    // you'd decode the transaction content properly
-    if (content.includes('accrue') || content.toLowerCase().includes('reward')) {
-      return 'accrueRewards';
-    } else if (content.includes('stake')) {
-      return 'stake';
-    } else if (content.includes('unstake') || content.includes('redeem')) {
-      return 'unstake';
-    } else if (content.includes('buyIn')) {
-      return 'buyIn';
-    } else if (content.includes('admin')) {
-      return 'admin';
+    if (!content) {
+      return 'unknown';
     }
 
-    return 'unknown';
+    try {
+      // Decode base64 content to binary
+      const contentBuffer = Buffer.from(content, 'base64');
+
+      // Action ID mapping extracted from the generated ABI file
+      // This ensures we stay in sync with contract codegen
+      const actionMap = getLiquidStakingActionMap();
+
+      // Liquid staking contract actions (0x10-0x19) take priority over MPC20 token actions (0x01-0x05)
+
+      // Strategy 1: Look 5-15 bytes BEFORE the contract address for LS actions
+      // This is where the actual contract call action ID typically appears
+      const contractBytes = Buffer.from(this.liquidStakingContract.replace(/^0x/, ''), 'hex');
+      const contractIndex = contentBuffer.indexOf(contractBytes);
+
+      if (contractIndex > 0) {
+        // Search 5-15 bytes before contract address (the "sweet spot" for LS actions)
+        const searchStart = Math.max(0, contractIndex - 15);
+        const searchEnd = contractIndex - 5;
+
+        for (let i = searchEnd; i >= searchStart; i--) {
+          const byte = contentBuffer[i];
+          if (isLiquidStakingAction(byte) && actionMap[byte]) {
+            return actionMap[byte];
+          }
+        }
+      }
+
+      // Strategy 2: Check very close to contract (0-5 bytes before) for any action
+      // This catches MPC20 token actions that appear just before the contract
+      if (contractIndex > 0) {
+        const searchStart = Math.max(0, contractIndex - 5);
+        const searchEnd = contractIndex - 1;
+
+        for (let i = searchEnd; i >= searchStart; i--) {
+          const byte = contentBuffer[i];
+          if (actionMap[byte]) {
+            return actionMap[byte];
+          }
+        }
+      }
+
+      // Strategy 3: Check common offsets for liquid staking actions
+      const commonOffsets = [72, 78, 79, 80];
+      for (const offset of commonOffsets) {
+        if (offset < contentBuffer.length) {
+          const byte = contentBuffer[offset];
+          if (isLiquidStakingAction(byte) && actionMap[byte]) {
+            return actionMap[byte];
+          }
+        }
+      }
+
+      // Strategy 4: Search broadly around contract address for liquid staking actions
+      if (contractIndex > 0) {
+        const searchStart = Math.max(0, contractIndex - 30);
+        const searchEnd = Math.min(contentBuffer.length, contractIndex + contractBytes.length + 50);
+
+        for (let i = searchStart; i < searchEnd; i++) {
+          const byte = contentBuffer[i];
+          if (isLiquidStakingAction(byte) && actionMap[byte]) {
+            return actionMap[byte];
+          }
+        }
+      }
+
+      // Strategy 5: If no liquid staking action found, accept any valid action
+      // Search near contract first (more likely to be correct), then scan entire buffer
+      if (contractIndex > 0) {
+        const searchStart = Math.max(0, contractIndex - 30);
+        const searchEnd = Math.min(contentBuffer.length, contractIndex + contractBytes.length + 50);
+
+        for (let i = searchStart; i < searchEnd; i++) {
+          const byte = contentBuffer[i];
+          if (actionMap[byte]) {
+            return actionMap[byte];
+          }
+        }
+      }
+
+      // Last resort: scan entire buffer
+      for (let i = 0; i < contentBuffer.length; i++) {
+        const byte = contentBuffer[i];
+        if (actionMap[byte]) {
+          return actionMap[byte];
+        }
+      }
+
+      return 'unknown';
+    } catch (error) {
+      console.warn('Error decoding transaction action:', error);
+      return 'unknown';
+    }
   }
 
   private async storeTransaction(tx: any, txId: string, blockNumber: number, blockTimestamp: Date): Promise<void> {
@@ -463,10 +546,18 @@ class PartisiaTransactionIndexer {
 
   private async getLastProcessedTxBlock(): Promise<number> {
     try {
-      const result = await db.query('SELECT MAX(block_number) as last_block FROM transactions');
-      const lastBlock = result.rows[0]?.last_block;
-      // Ensure proper conversion from BigInt/string to number
-      return lastBlock ? parseInt(lastBlock.toString()) : config.blockchain.deploymentBlock;
+      // Use dedicated tx_indexer_checkpoint table
+      // This persists independently of the main state indexer
+      const result = await db.query('SELECT last_scanned_block FROM tx_indexer_checkpoint WHERE id = 1');
+      const lastBlock = result.rows[0]?.last_scanned_block;
+
+      if (lastBlock) {
+        console.log(`📊 Resuming transaction scan from checkpoint: block ${lastBlock}`);
+        return parseInt(lastBlock.toString());
+      }
+
+      console.log(`📊 No checkpoint found, starting from deployment block ${config.blockchain.deploymentBlock}`);
+      return config.blockchain.deploymentBlock;
     } catch (error) {
       console.error('Failed to get last processed transaction block:', error);
       return config.blockchain.deploymentBlock;
@@ -474,8 +565,21 @@ class PartisiaTransactionIndexer {
   }
 
   private async updateLastProcessedTxBlock(blockNumber: number): Promise<void> {
-    // Update the internal tracker
-    this.lastProcessedBlock = blockNumber;
+    try {
+      // Update the internal tracker
+      this.lastProcessedBlock = blockNumber;
+
+      // Persist checkpoint to dedicated tx_indexer_checkpoint table after each batch
+      await db.query(`
+        INSERT INTO tx_indexer_checkpoint (id, last_scanned_block, updated_at)
+        VALUES (1, $1, NOW())
+        ON CONFLICT (id) DO UPDATE
+        SET last_scanned_block = $1, updated_at = NOW()
+      `, [blockNumber]);
+    } catch (error) {
+      console.error(`Failed to update tx checkpoint for block ${blockNumber}:`, error);
+      // Don't throw - continue indexing even if checkpoint fails
+    }
   }
 
   private chunkArray<T>(array: T[], size: number): T[][] {
