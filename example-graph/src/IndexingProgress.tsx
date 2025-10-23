@@ -118,10 +118,11 @@ const IndexingProgress: FC = () => {
     )
   }
 
-  // Don't show if indexing is complete
-  if (progress.overall.syncComplete) return null
-
   const { stateIndexer, transactionIndexer, overall } = progress
+
+  // Don't show if both indexers are complete
+  const bothComplete = stateIndexer.syncComplete && transactionIndexer.progressPercent >= 100
+  if (bothComplete) return null
 
   return (
     <div className="bg-gradient-to-r from-blue-50 to-indigo-100 rounded-lg shadow-lg p-6 mb-8">

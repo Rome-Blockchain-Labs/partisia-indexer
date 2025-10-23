@@ -2,6 +2,24 @@
 /* eslint-disable */
 // @ts-nocheck
 // noinspection ES6UnusedImports
+
+/**
+ * Contract Actions (for transaction indexer):
+ * #[action(shortname = 0x01)] transfer
+ * #[action(shortname = 0x03)] transfer_from
+ * #[action(shortname = 0x05)] approve
+ * #[action(shortname = 0x10)] submit
+ * #[action(shortname = 0x11)] withdraw
+ * #[action(shortname = 0x12)] accrue_rewards
+ * #[action(shortname = 0x13)] request_unlock
+ * #[action(shortname = 0x14)] deposit
+ * #[action(shortname = 0x15)] redeem
+ * #[action(shortname = 0x16)] change_buy_in
+ * #[action(shortname = 0x17)] disable_buy_in
+ * #[action(shortname = 0x18)] clean_up_pending_unlocks
+ * #[action(shortname = 0x19)] cancel_pending_unlock
+ */
+
 import {
   AbiBitInput,
   AbiBitOutput,

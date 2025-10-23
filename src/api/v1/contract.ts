@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import db from '../../db/client';
 import config from '../../config';
+import { fromRawAmount, getTokenDecimals } from '../../utils/denomination';
 
 export function createContractRouter(): Router {
   const router = Router();
@@ -28,17 +29,29 @@ export function createContractRouter(): Router {
       const liquid = BigInt(s.total_pool_liquid || '0');
       const stakeBalance = BigInt(s.stake_token_balance || '0');
 
-      // Calculate TVL using BigInt division
-      const stakedMpc = Number(staked / 1_000_000n) + Number(staked % 1_000_000n) / 1_000_000;
+      // Get token decimals for response
+      const decimals = await getTokenDecimals();
+
+      // Convert raw amounts to human-readable (uses token_decimals from DB)
+      const stakedMpc = await fromRawAmount(staked);
+      const liquidMpc = await fromRawAmount(liquid);
+      const balanceMpc = await fromRawAmount(stakeBalance);
       const tvlUsd = (stakedMpc * priceUsd).toFixed(2);
 
       res.apiSuccess({
         blockNumber: parseInt(s.block_number),
         timestamp: s.timestamp,
         exchangeRate: parseFloat(s.exchange_rate),
-        totalPoolStakeToken: staked.toString(),
-        totalPoolLiquid: liquid.toString(),
-        stakeTokenBalance: stakeBalance.toString(),
+        // Formatted values (human-readable)
+        totalPoolStakeToken: stakedMpc.toFixed(4),
+        totalPoolLiquid: liquidMpc.toFixed(4),
+        stakeTokenBalance: balanceMpc.toFixed(4),
+        // Raw values (for precision/custom formatting)
+        totalPoolStakeTokenRaw: staked.toString(),
+        totalPoolLiquidRaw: liquid.toString(),
+        stakeTokenBalanceRaw: stakeBalance.toString(),
+        // Metadata
+        tokenDecimals: decimals,
         buyInPercentage: parseFloat(s.buy_in_percentage || '0'),
         buyInEnabled: !!s.buy_in_enabled,
         tvlUsd

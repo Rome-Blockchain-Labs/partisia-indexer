@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import db from '../../db/client';
 import config from '../../config';
+import { fromRawAmount } from '../../utils/denomination';
 
 function validateNumericInput(value: string | undefined, min: number, max: number, defaultValue: number): number {
   if (!value) return defaultValue;
@@ -181,9 +182,9 @@ export function createAnalyticsRouter(): Router {
       const totalStaked = BigInt(current.rows[0]?.total_pool_stake_token || '0');
       const totalLiquid = BigInt(current.rows[0]?.total_pool_liquid || '0');
 
-      // Calculate USD values using BigInt division
-      const stakedMpc = Number(totalStaked / 1_000_000n) + Number(totalStaked % 1_000_000n) / 1_000_000;
-      const liquidMpc = Number(totalLiquid / 1_000_000n) + Number(totalLiquid % 1_000_000n) / 1_000_000;
+      // Convert raw amounts to human-readable (uses token_decimals from DB)
+      const stakedMpc = await fromRawAmount(totalStaked);
+      const liquidMpc = await fromRawAmount(totalLiquid);
 
       res.apiSuccess({
         price: {

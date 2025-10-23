@@ -21,16 +21,17 @@ export function extractActionMapFromABI(abiFilePath: string): ActionMapping {
   // Regex to match: export function functionName(...): Buffer {
   //   return AbiByteOutput.serializeBigEndian((_out) => {
   //     _out.writeBytes(Buffer.from("XX", "hex"));
-  const functionPattern = /export function (\w+)\([^)]*\): Buffer \{[\s\S]*?_out\.writeBytes\(Buffer\.from\("([0-9a-fA-F]{2})", "hex"\)\);/g;
+  const functionPattern = /export function (\w+)\([^)]*\): Buffer \{[\s\S]*?_out\.writeBytes\(Buffer\.from\("([0-9a-fA-F]+)", "hex"\)\);/g;
 
   let match;
   while ((match = functionPattern.exec(abiContent)) !== null) {
     const functionName = match[1];
     const actionIdHex = match[2];
-    const actionId = parseInt(actionIdHex, 16);
 
-    // Only include action functions, skip initialization
-    if (functionName !== 'initialize') {
+    // Only include action functions, skip initialization and multi-byte codes
+    // Action IDs are single bytes (2 hex characters)
+    if (functionName !== 'initialize' && actionIdHex.length === 2) {
+      const actionId = parseInt(actionIdHex, 16);
       actionMap[actionId] = functionName;
     }
   }

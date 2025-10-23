@@ -240,3 +240,16 @@ BEGIN
   ORDER BY block_number;
 END;
 $$ LANGUAGE plpgsql;
+
+-- Transaction indexer checkpoint table
+-- Tracks the last scanned block for transaction indexer independently
+CREATE TABLE IF NOT EXISTS tx_indexer_checkpoint (
+  id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  last_scanned_block BIGINT NOT NULL,
+  updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Initialize checkpoint if not exists
+INSERT INTO tx_indexer_checkpoint (id, last_scanned_block)
+VALUES (1, 10682802)
+ON CONFLICT (id) DO NOTHING;

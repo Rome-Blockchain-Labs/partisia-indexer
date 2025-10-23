@@ -1,5 +1,6 @@
 import { createSchema } from 'graphql-yoga'
 import db from '../db/client'
+import { fromRawAmount, getTokenDecimals } from '../utils/denomination'
 
 export const schema = createSchema({
   typeDefs: `
@@ -46,6 +47,9 @@ export const schema = createSchema({
       exchangeRate: String!
       totalStaked: String!
       totalLiquid: String!
+      totalStakedRaw: String!
+      totalLiquidRaw: String!
+      tokenDecimals: Int!
       tvlUsd: String!
     }
     
@@ -294,15 +298,22 @@ export const schema = createSchema({
         const staked = BigInt(s?.total_pool_stake_token || '0')
         const liquid = BigInt(s?.total_pool_liquid || '0')
 
-        // Calculate TVL using BigInt division to avoid precision loss
-        const stakedMpc = Number(staked / 1_000_000n) + Number(staked % 1_000_000n) / 1_000_000
+        // Get token decimals
+        const decimals = await getTokenDecimals()
+
+        // Convert raw amounts to human-readable (uses token_decimals from DB)
+        const stakedMpc = await fromRawAmount(staked)
+        const liquidMpc = await fromRawAmount(liquid)
         const tvlUsd = (stakedMpc * p).toFixed(2)
 
         return {
           blockNumber: s?.block_number || '0',
           exchangeRate: s?.exchange_rate || '1.0',
-          totalStaked: staked.toString(),
-          totalLiquid: liquid.toString(),
+          totalStaked: stakedMpc.toFixed(4),
+          totalLiquid: liquidMpc.toFixed(4),
+          totalStakedRaw: staked.toString(),
+          totalLiquidRaw: liquid.toString(),
+          tokenDecimals: decimals,
           tvlUsd
         }
       },
@@ -454,7 +465,7 @@ export const schema = createSchema({
 
           // Calculate reward using: reward = rate_change × total_pool_liquid
           const liquidBigInt = BigInt(current.total_pool_liquid)
-          const liquidMpc = Number(liquidBigInt / 1_000_000n) + Number(liquidBigInt % 1_000_000n) / 1_000_000
+          const liquidMpc = await fromRawAmount(liquidBigInt)
           const rewardMpc = rateChange * liquidMpc
 
           // Calculate MPC-denominated returns (protocol performance)
@@ -539,9 +550,9 @@ export const schema = createSchema({
             const mpcPrice = parseFloat(priceRow.price_usd)
             const totalLiquid = s.total_pool_liquid
             const totalStaked = s.total_pool_stake_token
-            // Use BigInt for precision-safe division
+            // Convert raw amounts to human-readable (uses token_decimals from DB)
             const liquidBigInt = BigInt(totalLiquid)
-            const poolSizeTokens = Number(liquidBigInt / 1_000_000n) + Number(liquidBigInt % 1_000_000n) / 1_000_000
+            const poolSizeTokens = await fromRawAmount(liquidBigInt)
 
             // Exchange rate should be from DB (1.0 at deployment, increases with rewards)
             const exchangeRate = parseFloat(s.exchange_rate) || 1.0
