@@ -3,6 +3,7 @@ import PriceComparisonChart from './PriceComparisonChart'
 import RewardsChart from './RewardsChart'
 import TransactionsPanel from './TransactionsPanel'
 import IndexingProgress from './IndexingProgress'
+import APYDisplay from './APYDisplay'
 import './App.css'
 
 function App() {
@@ -20,6 +21,9 @@ function App() {
         <div className="space-y-8">
           {/* Indexing Progress - only shows while indexing */}
           <IndexingProgress />
+
+          {/* APY Display */}
+          <APYDisplay />
 
           {/* Rewards & APY Chart */}
           <RewardsChart />
