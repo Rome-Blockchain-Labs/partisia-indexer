@@ -143,7 +143,9 @@ const RewardsChart: FC = () => {
         borderWidth: 2,
         fill: false,
         yAxisID: 'y-apy',
-        tension: 0.3,
+        tension: 0.4,
+        pointRadius: 0,
+        pointHoverRadius: 6,
       }] : []),
       ...(showApyUsd ? [{
         label: 'APY (USD)',
@@ -153,17 +155,21 @@ const RewardsChart: FC = () => {
         borderWidth: 2,
         fill: false,
         yAxisID: 'y-apy',
-        tension: 0.3,
+        tension: 0.4,
+        pointRadius: 0,
+        pointHoverRadius: 6,
       }] : []),
       ...(showDailyRewards ? [{
-        label: 'Daily Rewards (MPC)',
-        data: data.map(d => parseFloat(d.rewardAmountMpc)),
+        label: 'Exchange Rate Change',
+        data: data.map(d => d.exchangeRateChange * 100), // Convert to percentage
         borderColor: 'rgb(245, 158, 11)',
         backgroundColor: 'rgba(245, 158, 11, 0.1)',
         borderWidth: 2,
         fill: true,
-        yAxisID: 'y-rewards',
-        tension: 0.3,
+        yAxisID: 'y-change',
+        tension: 0.4,
+        pointRadius: 0,
+        pointHoverRadius: 6,
       }] : []),
     ]
   }
@@ -195,9 +201,9 @@ const RewardsChart: FC = () => {
             const value = context.parsed.y
 
             if (label.includes('APY')) {
-              return `${label}: ${value.toFixed(2)}%`
-            } else if (label.includes('Rewards')) {
-              return `${label}: ${value.toFixed(2)} MPC`
+              return `${label}: ${value.toFixed(4)}%`
+            } else if (label.includes('Change')) {
+              return `${label}: ${value.toFixed(6)}%`
             }
             return `${label}: ${value}`
           }
@@ -218,7 +224,11 @@ const RewardsChart: FC = () => {
     scales: {
       x: {
         grid: { display: false },
-        ticks: { maxRotation: 45, minRotation: 45 }
+        ticks: {
+          maxRotation: 0,
+          maxTicksLimit: 8,
+          font: { size: 11 }
+        }
       },
       'y-apy': {
         type: 'linear',
@@ -226,19 +236,32 @@ const RewardsChart: FC = () => {
         position: 'left',
         title: {
           display: true,
-          text: 'APY (%)'
+          text: 'APY (%)',
+          font: { size: 12, weight: 'bold' }
         },
-        grid: { color: 'rgba(0, 0, 0, 0.05)' }
+        grid: {
+          color: 'rgba(0, 0, 0, 0.05)',
+          drawOnChartArea: true
+        },
+        ticks: {
+          font: { size: 11 },
+          callback: (value) => Number(value).toFixed(4) + '%'
+        }
       },
-      'y-rewards': {
+      'y-change': {
         type: 'linear',
         display: showDailyRewards,
         position: 'right',
         title: {
           display: true,
-          text: 'Daily Rewards (MPC)'
+          text: 'Rate Change (%)',
+          font: { size: 12, weight: 'bold' }
         },
-        grid: { drawOnChartArea: false }
+        grid: { drawOnChartArea: false },
+        ticks: {
+          font: { size: 11 },
+          callback: (value) => Number(value).toFixed(6) + '%'
+        }
       }
     }
   }
@@ -379,7 +402,7 @@ const RewardsChart: FC = () => {
                 onChange={(e) => setShowDailyRewards(e.target.checked)}
                 className="rounded"
               />
-              <span className="text-gray-700">Daily Rewards</span>
+              <span className="text-gray-700">Rate Change</span>
             </label>
           </div>
         </div>
