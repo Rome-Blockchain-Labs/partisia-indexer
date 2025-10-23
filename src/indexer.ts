@@ -69,7 +69,12 @@ class PartisiaIndexer {
     const batchEnd = Math.min(nextBlock + this.batchSize - 1, this.currentBlockHeight);
 
     if (nextBlock > this.currentBlockHeight) {
-      console.log(`⏳ Caught up! Waiting for new blocks (current: ${this.currentBlockHeight})`);
+      if (!this.syncComplete) {
+        this.syncComplete = true;
+        console.log(`✅ Sync complete! Caught up to block ${this.currentBlockHeight}`);
+      } else {
+        console.log(`⏳ Caught up! Waiting for new blocks (current: ${this.currentBlockHeight})`);
+      }
       await this.sleep(10000);
       return;
     }
