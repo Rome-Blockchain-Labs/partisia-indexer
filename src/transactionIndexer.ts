@@ -2,7 +2,7 @@ import axios from 'axios';
 import config from './config';
 import db from './db/client';
 import { getLiquidStakingActionMap, isLiquidStakingAction } from './utils/abiActionExtractor';
-import { decodeTransactionAction } from './utils/rpcDecoder';
+import { decodeTransactionAction, decodeAccrueRewardsArgs } from './utils/rpcDecoder';
 
 class PartisiaTransactionIndexer {
   private running = false;
@@ -305,12 +305,21 @@ class PartisiaTransactionIndexer {
     const isSuccess = tx.executionStatus?.success || false;
 
     // Extract any amounts or relevant data from transaction
-    const metadata = {
+    const metadata: any = {
       isSuccess,
       executionStatus: tx.executionStatus,
       isEvent: tx.isEvent || false,
       contentLength: (tx.content || '').length
     };
+
+    // Decode transaction arguments based on action type
+    if (action === 'accrueRewards' && tx.content) {
+      const args = decodeAccrueRewardsArgs(tx.content, this.liquidStakingContract);
+      if (args) {
+        metadata.arguments = args;
+        console.log(`📊 Decoded accrueRewards arguments: ${args.stakeTokenAmount}`);
+      }
+    }
 
     // Add to buffer instead of immediate write
     this.transactionBuffer.push({
