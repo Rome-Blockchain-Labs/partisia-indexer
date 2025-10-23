@@ -20,7 +20,7 @@ on:
         required: false
         default: 'none'
         type: choice
-        options: ['none', 'protocol', 'all']
+        options: ['none', 'protocol', 'all', 'full']
 
 jobs:
   deploy:
@@ -162,6 +162,25 @@ jobs:
           TRUNCATE price_history RESTART IDENTITY CASCADE;
           TRUNCATE mpc_prices RESTART IDENTITY CASCADE;
           TRUNCATE indexed_blocks RESTART IDENTITY CASCADE;
+          SQL
+            elif [[ "${RESET_DB}" == "full" ]]; then
+              echo "🔥 FULL RESET: Nuking everything including checkpoints and block mappings"
+              docker exec -i \$(docker compose -f docker-compose.${{ env.ENVIRONMENT }}.yaml ps -q postgres) \
+                psql -U indexer -d ls_indexer <<SQL
+          TRUNCATE contract_states CASCADE;
+          TRUNCATE current_state CASCADE;
+          TRUNCATE transactions CASCADE;
+          TRUNCATE protocol_rewards CASCADE;
+          TRUNCATE users CASCADE;
+          TRUNCATE user_activity CASCADE;
+          TRUNCATE governance_changes CASCADE;
+          TRUNCATE protocol_parameters CASCADE;
+          TRUNCATE price_history CASCADE;
+          TRUNCATE mpc_prices CASCADE;
+          TRUNCATE block_mappings CASCADE;
+          TRUNCATE indexed_blocks CASCADE;
+          DELETE FROM token_metadata;
+          UPDATE tx_indexer_checkpoint SET last_scanned_block = 10888000, updated_at = NOW();
           SQL
             fi
 
