@@ -12,29 +12,33 @@ export function createRewardsRouter(): Router {
 
       const result = await db.query(
         `SELECT
-          block_number,
-          COALESCE((metadata->>'userRewards')::text, amount) as user_reward_amount,
-          COALESCE((metadata->>'protocolRewards')::text, '0') as protocol_reward_amount,
-          metadata->>'exchangeRate' as exchange_rate,
-          tx_hash,
-          timestamp
-        FROM transactions
-        WHERE action = 'accrueRewards'
-        ORDER BY block_number DESC
+          t.block_number,
+          t.metadata,
+          t.tx_hash,
+          t.timestamp,
+          cs.exchange_rate
+        FROM transactions t
+        LEFT JOIN contract_states cs ON cs.block_number = t.block_number
+        WHERE t.action = 'accrueRewards'
+        ORDER BY t.block_number DESC
         LIMIT $1 OFFSET $2`,
         [limit, offset]
       );
 
-      const rewards = result.rows.map(row => ({
-        blockNumber: parseInt(row.block_number),
-        userRewardAmount: row.user_reward_amount,
-        protocolRewardAmount: row.protocol_reward_amount,
-        exchangeRate: row.exchange_rate,
-        txHash: row.tx_hash,
-        timestamp: row.timestamp,
-        rewardType: 3,
-        isExtended: true
-      }));
+      const rewards = result.rows.map(row => {
+        const metadata = row.metadata || {};
+        const stakeTokenAmount = metadata.arguments?.stakeTokenAmount || null;
+
+        return {
+          txHash: row.tx_hash,
+          blockNumber: parseInt(row.block_number),
+          timestamp: row.timestamp,
+          stakeTokenAmount: stakeTokenAmount,
+          exchangeRate: row.exchange_rate || null,
+          rewardType: 3,
+          isExtended: true
+        };
+      });
 
       res.apiSuccess({
         rewards,

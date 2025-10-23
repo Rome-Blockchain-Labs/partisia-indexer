@@ -40,6 +40,8 @@ export const schema = createSchema({
       sender: String!
       amount: String!
       metadata: String
+      stakeTokenAmount: String
+      exchangeRate: Float
     }
     
     type CurrentState {
@@ -213,78 +215,99 @@ export const schema = createSchema({
       },
 
       transactions: async (_: any, { first, skip, orderBy, where }: any) => {
-        let query = 'SELECT * FROM transactions WHERE 1=1'
+        let query = 'SELECT t.*, cs.exchange_rate FROM transactions t LEFT JOIN contract_states cs ON cs.block_number = t.block_number WHERE 1=1'
         const params = []
 
         if (where) {
           if (where.action) {
             params.push(where.action)
-            query += ` AND action = $${params.length}`
+            query += ` AND t.action = $${params.length}`
           }
           if (where.sender) {
             params.push(where.sender)
-            query += ` AND sender = $${params.length}`
+            query += ` AND t.sender = $${params.length}`
           }
           if (where.blockNumber_gte) {
             params.push(where.blockNumber_gte)
-            query += ` AND block_number >= $${params.length}`
+            query += ` AND t.block_number >= $${params.length}`
           }
           if (where.blockNumber_lte) {
             params.push(where.blockNumber_lte)
-            query += ` AND block_number <= $${params.length}`
+            query += ` AND t.block_number <= $${params.length}`
           }
           if (where.timestamp_after) {
             params.push(where.timestamp_after)
-            query += ` AND timestamp > $${params.length}`
+            query += ` AND t.timestamp > $${params.length}`
           }
           if (where.timestamp_before) {
             params.push(where.timestamp_before)
-            query += ` AND timestamp < $${params.length}`
+            query += ` AND t.timestamp < $${params.length}`
           }
         }
 
         const orderMap = {
-          BLOCK_DESC: 'block_number DESC',
-          BLOCK_ASC: 'block_number ASC',
-          TIMESTAMP_DESC: 'timestamp DESC',
-          TIMESTAMP_ASC: 'timestamp ASC'
+          BLOCK_DESC: 't.block_number DESC',
+          BLOCK_ASC: 't.block_number ASC',
+          TIMESTAMP_DESC: 't.timestamp DESC',
+          TIMESTAMP_ASC: 't.timestamp ASC'
         }
 
         query += ` ORDER BY ${orderMap[orderBy as keyof typeof orderMap]}`
         query += ` LIMIT ${first} OFFSET ${skip}`
 
         const result = await db.query(query, params)
-        return result.rows.map(r => ({
-          txHash: r.tx_hash,
-          blockNumber: r.block_number.toString(),
-          timestamp: r.timestamp.toISOString(),
-          action: r.action,
-          sender: r.sender,
-          amount: r.amount,
-          metadata: r.metadata ? JSON.stringify(r.metadata) : null
-        }))
+        return result.rows.map(r => {
+          const metadata = r.metadata || {}
+          const stakeTokenAmount = metadata.arguments?.stakeTokenAmount || null
+
+          return {
+            txHash: r.tx_hash,
+            blockNumber: r.block_number.toString(),
+            timestamp: r.timestamp.toISOString(),
+            action: r.action,
+            sender: r.sender,
+            amount: r.amount,
+            metadata: r.metadata ? JSON.stringify(r.metadata) : null,
+            stakeTokenAmount: stakeTokenAmount,
+            exchangeRate: r.exchange_rate ? parseFloat(r.exchange_rate) : null
+          }
+        })
       },
 
       rewards: async (_: any, { first, skip, orderBy }: any) => {
         const orderMap = {
-          BLOCK_DESC: 'block_number DESC',
-          BLOCK_ASC: 'block_number ASC',
-          TIMESTAMP_DESC: 'timestamp DESC',
-          TIMESTAMP_ASC: 'timestamp ASC'
+          BLOCK_DESC: 't.block_number DESC',
+          BLOCK_ASC: 't.block_number ASC',
+          TIMESTAMP_DESC: 't.timestamp DESC',
+          TIMESTAMP_ASC: 't.timestamp ASC'
         }
 
-        const query = `SELECT * FROM transactions WHERE action = 'accrueRewards' ORDER BY ${orderMap[orderBy as keyof typeof orderMap]} LIMIT $1 OFFSET $2`
+        const query = `
+          SELECT t.*, cs.exchange_rate
+          FROM transactions t
+          LEFT JOIN contract_states cs ON cs.block_number = t.block_number
+          WHERE t.action = 'accrueRewards'
+          ORDER BY ${orderMap[orderBy as keyof typeof orderMap]}
+          LIMIT $1 OFFSET $2
+        `
 
         const result = await db.query(query, [first, skip])
-        return result.rows.map(r => ({
-          txHash: r.tx_hash,
-          blockNumber: r.block_number.toString(),
-          timestamp: r.timestamp.toISOString(),
-          action: r.action,
-          sender: r.sender,
-          amount: r.amount,
-          metadata: r.metadata ? JSON.stringify(r.metadata) : null
-        }))
+        return result.rows.map(r => {
+          const metadata = r.metadata || {}
+          const stakeTokenAmount = metadata.arguments?.stakeTokenAmount || null
+
+          return {
+            txHash: r.tx_hash,
+            blockNumber: r.block_number.toString(),
+            timestamp: r.timestamp.toISOString(),
+            action: r.action,
+            sender: r.sender,
+            amount: r.amount,
+            metadata: r.metadata ? JSON.stringify(r.metadata) : null,
+            stakeTokenAmount: stakeTokenAmount,
+            exchangeRate: r.exchange_rate ? parseFloat(r.exchange_rate) : null
+          }
+        })
       },
 
       currentState: async () => {
