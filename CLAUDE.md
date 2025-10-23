@@ -1,0 +1,1 @@
+- never mention claude as coauthor in commits or PRs or etc

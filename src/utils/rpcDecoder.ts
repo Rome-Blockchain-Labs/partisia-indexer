@@ -71,7 +71,7 @@ export function decodeTransactionAction(
  * accrueRewards has one argument: stakeTokenAmount (u128, 16 bytes)
  *
  * @param contentBase64 Base64-encoded transaction content
- * @param targetContract Expected contract address
+ * @param targetContract Expected contract address (hex string without 0x)
  * @returns Object with stakeTokenAmount as string, or null if decoding fails
  */
 export function decodeAccrueRewardsArgs(
@@ -80,18 +80,33 @@ export function decodeAccrueRewardsArgs(
 ): { stakeTokenAmount: string } | null {
   try {
     const contentBuffer = Buffer.from(contentBase64, 'base64');
-    const contractBytes = Buffer.from(targetContract.replace(/^0x/, ''), 'hex');
 
-    // Find contract address in the RPC envelope
-    const contractIndex = contentBuffer.indexOf(contractBytes);
-    if (contractIndex < 0) {
-      return null;
+    // Contract address can be stored as ASCII string OR as binary bytes
+    // Try both formats
+    const contractAscii = Buffer.from(targetContract.replace(/^0x/, ''), 'ascii');
+    const contractBinary = Buffer.from(targetContract.replace(/^0x/, ''), 'hex');
+
+    let actionIndex = -1;
+
+    // Search for 0x12 (accrueRewards action ID)
+    for (let i = 0; i < contentBuffer.length; i++) {
+      if (contentBuffer[i] === 0x12) {
+        // Verify this is after the contract address (either format)
+        const hasAsciiContract = contentBuffer.indexOf(contractAscii) >= 0 && contentBuffer.indexOf(contractAscii) < i;
+        const hasBinaryContract = contentBuffer.indexOf(contractBinary) >= 0 && contentBuffer.indexOf(contractBinary) < i;
+
+        if (hasAsciiContract || hasBinaryContract) {
+          actionIndex = i;
+          break;
+        }
+      }
     }
 
-    // Action ID is at contractEnd + 4
-    const contractEnd = contractIndex + contractBytes.length;
-    const actionOffset = contractEnd + 4;
-    const argsOffset = actionOffset + 1; // Arguments start after action byte
+    if (actionIndex < 0) {
+      return null; // Action ID not found
+    }
+
+    const argsOffset = actionIndex + 1; // Arguments start immediately after action byte
 
     if (argsOffset + 16 > contentBuffer.length) {
       console.warn(`Not enough bytes for u128 argument at offset ${argsOffset}`);
@@ -99,7 +114,7 @@ export function decodeAccrueRewardsArgs(
     }
 
     // Extract 16-byte u128 using AbiByteInput (big-endian)
-    const argsBuffer = contentBuffer.slice(argsOffset);
+    const argsBuffer = contentBuffer.slice(argsOffset, argsOffset + 16);
     const input = AbiByteInput.createBigEndian(argsBuffer);
     const stakeTokenAmount = input.readUnsignedBigInteger(16);
 
