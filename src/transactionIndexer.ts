@@ -1,8 +1,7 @@
 import axios from 'axios';
 import config from './config';
 import db from './db/client';
-import { getLiquidStakingActionMap, isLiquidStakingAction } from './utils/abiActionExtractor';
-import { decodeTransactionAction, decodeAccrueRewardsArgs } from './utils/rpcDecoder';
+import { TransactionDecoder, TransactionContent, DECODER_VERSION } from './decoder/transactionDecoder';
 
 class PartisiaTransactionIndexer {
   private running = false;
@@ -22,28 +21,46 @@ class PartisiaTransactionIndexer {
   private currentBlockHeight = 0;
   private lastProcessedBlock = 0;
 
+  // Transaction decoder (stateless, reusable)
+  private readonly decoder: TransactionDecoder;
+
   private stats = {
     transactionsProcessed: 0,
     blocksScanned: 0,
     contractTxFound: 0,
     adminTxFound: 0,
+    decodeFailed: 0,
     startTime: Date.now()
   };
 
-  // Transaction buffer for batched DB writes
+  // Transaction content buffer (raw data)
+  private contentBuffer: Array<TransactionContent> = [];
+
+  // Decoded transaction buffer
   private transactionBuffer: Array<{
-    txId: string;
+    txHash: string;
     blockNumber: number;
-    blockTimestamp: Date;
+    timestamp: Date;
     action: string;
+    sender: string;
+    amount: string | null;
+    decodedArgs: any;
+    decoderVersion: string;
     metadata: any;
   }> = [];
+
   private readonly bufferFlushSize = 100;
 
   // Failed blocks retry queue with attempt tracking
   private failedBlocksQueue: Map<number, number> = new Map(); // blockNumber -> retryCount
 
-  constructor() {}
+  constructor() {
+    // Initialize decoder with contract addresses
+    this.decoder = new TransactionDecoder(
+      this.liquidStakingContract,
+      this.stakingResponsible
+    );
+  }
 
   async start() {
     console.log('🔍 Starting Partisia Transaction Indexer');
@@ -112,7 +129,8 @@ class PartisiaTransactionIndexer {
     // Process blocks concurrently but rate-limited
     const results = await this.processBlocksConcurrently(blocks);
 
-    // Flush any remaining transactions in buffer
+    // Flush any remaining buffered data (content first, then decoded)
+    await this.flushContentBuffer();
     await this.flushTransactionBuffer();
 
     this.stats.blocksScanned += blocks.length;
@@ -205,7 +223,7 @@ class PartisiaTransactionIndexer {
 
   private async processTransaction(txId: string, blockNumber: number, blockTimestamp: Date): Promise<void> {
     try {
-      // Fetch transaction details
+      // Fetch transaction details from RPC
       const txUrl = `${config.blockchain.apiUrl}/chain/shards/${config.blockchain.shard}/transactions/${txId}`;
       const txResponse = await axios.get(txUrl, { timeout: 10000 });
 
@@ -214,18 +232,66 @@ class PartisiaTransactionIndexer {
       }
 
       const tx = txResponse.data;
+      const content = tx.content || '';
 
-      // Check if this transaction is relevant to our contract or admin
-      const isRelevant = await this.isRelevantTransaction(tx, txId);
+      if (!content) {
+        return;
+      }
 
-      if (isRelevant) {
-        await this.storeTransaction(tx, txId, blockNumber, blockTimestamp);
+      // Step 1: Store raw transaction content (immutable)
+      const txContent: TransactionContent = {
+        txHash: txId,
+        blockNumber,
+        timestamp: blockTimestamp,
+        contentBase64: content,
+        events: tx.events || null,
+        executionStatus: tx.executionStatus || null
+      };
+
+      // Add to content buffer
+      this.contentBuffer.push(txContent);
+
+      // Step 2: Decode transaction (mutable interpretation)
+      const decodeResult = this.decoder.decode(txContent);
+
+      if (decodeResult.success && decodeResult.decoded) {
+        const decoded = decodeResult.decoded;
+
+        // Add to transaction buffer
+        this.transactionBuffer.push({
+          txHash: decoded.txHash,
+          blockNumber: decoded.blockNumber,
+          timestamp: decoded.timestamp,
+          action: decoded.action,
+          sender: decoded.sender,
+          amount: decoded.amount,
+          decodedArgs: decoded.decodedArgs,
+          decoderVersion: decoded.decoderVersion,
+          metadata: decoded.metadata
+        });
+
         this.stats.transactionsProcessed++;
+        this.stats.contractTxFound++;
 
-        const action = await this.identifyTransactionAction(tx);
-        if (action) {
-          console.log(`💰 Found ${action} transaction: ${txId} in block ${blockNumber}`);
+        console.log(`💰 Indexed ${decoded.action} transaction: ${txId} in block ${blockNumber}`);
+
+        // Log decoded arguments if present
+        if (decoded.decodedArgs) {
+          console.log(`📊 Decoded arguments: ${JSON.stringify(decoded.decodedArgs)}`);
         }
+      } else {
+        // Store content even if decode failed (can re-process later)
+        this.stats.decodeFailed++;
+        console.warn(`⚠️  Failed to decode transaction ${txId}: ${decodeResult.error}`);
+      }
+
+      // Flush buffers if they're full
+      if (this.contentBuffer.length >= this.bufferFlushSize) {
+        await this.flushContentBuffer();
+      }
+
+      if (this.transactionBuffer.length >= this.bufferFlushSize) {
+        await this.flushTransactionBuffer();
       }
 
     } catch (error: any) {
@@ -233,116 +299,51 @@ class PartisiaTransactionIndexer {
     }
   }
 
-  private async isRelevantTransaction(tx: any, txId: string): Promise<boolean> {
-    const content = tx.content || '';
-
-    // Convert hex addresses to bytes for binary search
-    const contractAddressHex = this.liquidStakingContract.toLowerCase();
-    const adminAddressHex = this.stakingResponsible.toLowerCase();
-
-    // Convert hex string to Buffer (remove any 0x prefix)
-    const contractBytes = Buffer.from(contractAddressHex.replace(/^0x/, ''), 'hex');
-    const adminBytes = Buffer.from(adminAddressHex.replace(/^0x/, ''), 'hex');
-
-    // Decode base64 content to binary
-    let contentBuffer: Buffer;
-    try {
-      contentBuffer = Buffer.from(content, 'base64');
-    } catch (e) {
-      // If base64 decode fails, treat as empty
-      contentBuffer = Buffer.alloc(0);
+  /**
+   * Flush raw transaction content buffer to database
+   * This is the immutable source of truth - never modified after insert
+   */
+  private async flushContentBuffer(): Promise<void> {
+    if (this.contentBuffer.length === 0) {
+      return;
     }
 
-    // Check if contract or admin address bytes appear in the decoded content
-    // Only check content (not events) to avoid catching "payout" transactions where our contract
-    // is mentioned in events as a recipient, but isn't the actual target of the transaction
-    const hasContractInContent = contentBuffer.includes(contractBytes);
-    const hasAdminInContent = contentBuffer.includes(adminBytes);
-
-    // A transaction is relevant ONLY if it directly calls our contract (address in content)
-    // This excludes "payout" transactions from validators that only mention us in events
-    const isRelevant = hasContractInContent || hasAdminInContent;
-
-    if (isRelevant) {
-      console.log(`🔍 Relevant transaction found: ${txId} (contract in content: ${hasContractInContent}, admin in content: ${hasAdminInContent})`);
-    }
-
-    return isRelevant;
-  }
-
-  private async identifyTransactionAction(tx: any): Promise<string | null> {
-    const content = tx.content || '';
-
-    if (!content) {
-      return 'unknown';
-    }
+    const batch = [...this.contentBuffer];
+    this.contentBuffer = [];
 
     try {
-      // Use RPC decoder to extract action ID from transaction content
-      const actionId = decodeTransactionAction(content, this.liquidStakingContract);
+      const values = batch.map((_, i) => {
+        const offset = i * 6;
+        return `($${offset+1}, $${offset+2}, $${offset+3}, $${offset+4}, $${offset+5}, $${offset+6})`;
+      }).join(',');
 
-      if (actionId === null) {
-        return 'unknown';
-      }
+      const params = batch.flatMap(t => [
+        t.txHash,
+        t.blockNumber,
+        t.timestamp,
+        t.contentBase64,
+        t.events ? JSON.stringify(t.events) : null,
+        t.executionStatus ? JSON.stringify(t.executionStatus) : null
+      ]);
 
-      // Map action ID byte to action name using ABI-generated mapping
-      const actionMap = getLiquidStakingActionMap();
+      await db.query(`
+        INSERT INTO transaction_content (tx_hash, block_number, timestamp, content_base64, events, execution_status)
+        VALUES ${values}
+        ON CONFLICT (tx_hash) DO NOTHING
+      `, params);
 
-      if (actionMap[actionId]) {
-        return actionMap[actionId];
-      }
-
-      console.warn(`Unknown action ID: 0x${actionId.toString(16)}`);
-      return 'unknown';
-    } catch (error) {
-      console.warn('Error decoding transaction action:', error);
-      return 'unknown';
+      console.log(`📦 Flushed ${batch.length} transaction content records`);
+    } catch (error: any) {
+      console.error(`Failed to flush ${batch.length} content records:`, error.message);
+      // Re-add to buffer for retry
+      this.contentBuffer.unshift(...batch);
     }
   }
 
-  private async storeTransaction(tx: any, txId: string, blockNumber: number, blockTimestamp: Date): Promise<void> {
-    const action = await this.identifyTransactionAction(tx) || 'unknown';
-    const isSuccess = tx.executionStatus?.success || false;
-
-    // Extract any amounts or relevant data from transaction
-    const metadata: any = {
-      isSuccess,
-      executionStatus: tx.executionStatus,
-      isEvent: tx.isEvent || false,
-      contentLength: (tx.content || '').length
-    };
-
-    // Decode transaction arguments based on action type
-    if (action === 'accrueRewards' && tx.content) {
-      const args = decodeAccrueRewardsArgs(tx.content, this.liquidStakingContract);
-      if (args) {
-        metadata.arguments = args;
-        console.log(`📊 Decoded accrueRewards arguments: ${args.stakeTokenAmount}`);
-      }
-    }
-
-    // Add to buffer instead of immediate write
-    this.transactionBuffer.push({
-      txId,
-      blockNumber,
-      blockTimestamp,
-      action,
-      metadata
-    });
-
-    // Update stats
-    if (action.includes('admin')) {
-      this.stats.adminTxFound++;
-    } else {
-      this.stats.contractTxFound++;
-    }
-
-    // Flush if buffer is full
-    if (this.transactionBuffer.length >= this.bufferFlushSize) {
-      await this.flushTransactionBuffer();
-    }
-  }
-
+  /**
+   * Flush decoded transaction buffer to database
+   * This is the mutable interpretation layer - can be regenerated
+   */
   private async flushTransactionBuffer(): Promise<void> {
     if (this.transactionBuffer.length === 0) {
       return;
@@ -352,30 +353,38 @@ class PartisiaTransactionIndexer {
     this.transactionBuffer = [];
 
     try {
-      // Batch insert all transactions
+      // Batch insert decoded transactions
       const values = batch.map((_, i) => {
-        const offset = i * 6;
-        return `($${offset+1}, $${offset+2}, $${offset+3}, $${offset+4}, $${offset+5}, $${offset+6})`;
+        const offset = i * 9;
+        return `($${offset+1}, $${offset+2}, $${offset+3}, $${offset+4}, $${offset+5}, $${offset+6}, $${offset+7}, $${offset+8}, $${offset+9})`;
       }).join(',');
 
       const params = batch.flatMap(t => [
-        t.txId,
+        t.txHash,
         t.blockNumber,
-        t.blockTimestamp,
+        t.timestamp,
         t.action,
-        'unknown',
-        JSON.stringify(t.metadata)
+        t.sender,
+        t.amount,
+        t.decodedArgs ? JSON.stringify(t.decodedArgs) : null,
+        t.decoderVersion,
+        t.metadata ? JSON.stringify(t.metadata) : null
       ]);
 
       await db.query(`
-        INSERT INTO transactions (tx_hash, block_number, timestamp, action, sender, metadata)
+        INSERT INTO transactions (tx_hash, block_number, timestamp, action, sender, amount, decoded_args, decoder_version, metadata)
         VALUES ${values}
         ON CONFLICT (tx_hash) DO UPDATE SET
           action = EXCLUDED.action,
+          sender = EXCLUDED.sender,
+          amount = EXCLUDED.amount,
+          decoded_args = EXCLUDED.decoded_args,
+          decoder_version = EXCLUDED.decoder_version,
+          decoded_at = NOW(),
           metadata = EXCLUDED.metadata
       `, params);
 
-      this.stats.transactionsProcessed += batch.length;
+      console.log(`📝 Flushed ${batch.length} decoded transactions`);
     } catch (error: any) {
       console.error(`Failed to flush ${batch.length} transactions:`, error.message);
       // Re-add to buffer for retry
@@ -558,8 +567,11 @@ class PartisiaTransactionIndexer {
 
   async stop() {
     this.running = false;
-    // Flush any remaining buffered transactions
+
+    // Flush any remaining buffered data (content first, then decoded)
+    await this.flushContentBuffer();
     await this.flushTransactionBuffer();
+
     console.log('🛑 Transaction indexer stopped');
     console.log('📊 Final stats:', this.getStats());
   }
