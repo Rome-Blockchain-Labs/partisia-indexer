@@ -39,6 +39,7 @@ import {
   StateWithClient,
   SecretInputBuilder,
 } from "@partisiablockchain/abi-client";
+import { CompactBitArray } from "@secata-public/bitmanipulation-ts";
 
 type Option<K> = K | undefined;
 export class liquid_staking {
@@ -108,7 +109,8 @@ export class liquid_staking {
     const amountOfBuyInLockedStakeTokens: BN = _input.readUnsignedBigInteger(16);
     const buyInPercentage: BN = _input.readUnsignedBigInteger(16);
     const buyInEnabled: boolean = _input.readBoolean();
-    return { tokenForStaking, stakeTokenBalance, stakingResponsible, administrator, totalPoolStakeToken, totalPoolLiquid, liquidTokenState, pendingUnlocks, buyInTokens, lengthOfCooldownPeriod, lengthOfRedeemPeriod, amountOfBuyInLockedStakeTokens, buyInPercentage, buyInEnabled };
+    const pendingUnlockIdCounter: number = _input.readU32();
+    return { tokenForStaking, stakeTokenBalance, stakingResponsible, administrator, totalPoolStakeToken, totalPoolLiquid, liquidTokenState, pendingUnlocks, buyInTokens, lengthOfCooldownPeriod, lengthOfRedeemPeriod, amountOfBuyInLockedStakeTokens, buyInPercentage, buyInEnabled, pendingUnlockIdCounter };
   }
   public deserializeLiquidTokenState(_input: AbiInput): LiquidTokenState {
     const balances_treeId = _input.readI32();
@@ -160,12 +162,13 @@ export class liquid_staking {
     return { owner, spender };
   }
   public deserializePendingUnlock(_input: AbiInput): PendingUnlock {
+    const id: number = _input.readU32();
     const liquidAmount: BN = _input.readUnsignedBigInteger(16);
     const stakeTokenAmount: BN = _input.readUnsignedBigInteger(16);
     const createdAt: BN = _input.readU64();
     const cooldownEndsAt: BN = _input.readU64();
     const expiresAt: BN = _input.readU64();
-    return { liquidAmount, stakeTokenAmount, createdAt, cooldownEndsAt, expiresAt };
+    return { id, liquidAmount, stakeTokenAmount, createdAt, cooldownEndsAt, expiresAt };
   }
   public async getState(): Promise<LiquidStakingState> {
     const bytes = await this._client?.getContractStateBinary(this._address!);
@@ -192,6 +195,7 @@ export interface LiquidStakingState {
   amountOfBuyInLockedStakeTokens: BN;
   buyInPercentage: BN;
   buyInEnabled: boolean;
+  pendingUnlockIdCounter: number;
 }
 
 export interface LiquidTokenState {
@@ -213,6 +217,7 @@ function serializeAllowedAddress(_out: AbiOutput, _value: AllowedAddress): void 
 }
 
 export interface PendingUnlock {
+  id: number;
   liquidAmount: BN;
   stakeTokenAmount: BN;
   createdAt: BN;
@@ -317,6 +322,13 @@ export function disableBuyIn(): Buffer {
 export function cleanUpPendingUnlocks(): Buffer {
   return AbiByteOutput.serializeBigEndian((_out) => {
     _out.writeBytes(Buffer.from("18", "hex"));
+  });
+}
+
+export function cancelPendingUnlock(pendingUnlockId: number): Buffer {
+  return AbiByteOutput.serializeBigEndian((_out) => {
+    _out.writeBytes(Buffer.from("19", "hex"));
+    _out.writeU32(pendingUnlockId);
   });
 }
 
