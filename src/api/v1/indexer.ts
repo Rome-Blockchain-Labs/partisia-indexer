@@ -18,7 +18,8 @@ export function createIndexerRouter(): Router {
           blocksRemaining: Math.max(0, stateStats.currentBlockHeight - stateStats.lastIndexedBlock),
           progressPercent: stateStats.progressPercent,
           blocksPerSecond: stateStats.performance.blocksPerSecond,
-          syncComplete: stateStats.syncComplete
+          syncComplete: stateStats.syncComplete,
+          syncing: !stateStats.syncComplete
         },
         overall: {
           syncing: !stateStats.syncComplete,
@@ -31,17 +32,24 @@ export function createIndexerRouter(): Router {
         const transactionIndexer = require('../../transactionIndexer').default;
         const txStats = transactionIndexer.getStats();
 
+        const txCurrentBlock = txStats.lastProcessedBlock || config.blockchain.deploymentBlock;
+        const txSyncing = txCurrentBlock < stateStats.currentBlockHeight;
+
         response.transactions = {
           enabled: true,
-          currentBlock: txStats.lastProcessedBlock || config.blockchain.deploymentBlock,
+          currentBlock: txCurrentBlock,
           targetBlock: stateStats.currentBlockHeight,
           deploymentBlock: config.blockchain.deploymentBlock,
-          blocksRemaining: Math.max(0, stateStats.currentBlockHeight - (txStats.lastProcessedBlock || config.blockchain.deploymentBlock)),
+          blocksRemaining: Math.max(0, stateStats.currentBlockHeight - txCurrentBlock),
           transactionsProcessed: txStats.transactionsProcessed || 0,
           contractTxFound: txStats.contractTxFound || 0,
           adminTxFound: txStats.adminTxFound || 0,
-          blocksPerSecond: txStats.blocksPerSecond || 0
+          blocksPerSecond: txStats.blocksPerSecond || 0,
+          syncing: txSyncing
         };
+
+        // Update overall.syncing to true if EITHER state or transactions are syncing
+        response.overall.syncing = !stateStats.syncComplete || txSyncing;
       } else {
         response.transactions = {
           enabled: false,

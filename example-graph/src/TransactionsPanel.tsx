@@ -97,7 +97,7 @@ const TransactionsPanel: FC = () => {
       case 'requestUnlock': return 'Unstake'
       case 'withdraw': return 'Withdraw'
       case 'redeem': return 'Redeem'
-      case 'accrueRewards': return 'Rewards'
+      case 'accrueRewards': return 'Protocol Rewards'
       case 'transfer': return 'Transfer'
       case 'transferFrom': return 'Transfer From'
       case 'approve': return 'Approve'
@@ -119,7 +119,7 @@ const TransactionsPanel: FC = () => {
             { value: 'submit', label: 'Stake' },
             { value: 'requestUnlock', label: 'Unstake' },
             { value: 'withdraw', label: 'Withdraw' },
-            { value: 'accrueRewards', label: 'Rewards' },
+            { value: 'accrueRewards', label: 'Protocol Rewards' },
             { value: 'redeem', label: 'Redeem' },
             { value: 'approve', label: 'Approve' },
             { value: 'transfer', label: 'Transfer' }

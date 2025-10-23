@@ -2,6 +2,7 @@ import axios from 'axios';
 import config from './config';
 import db from './db/client';
 import { getLiquidStakingActionMap, isLiquidStakingAction } from './utils/abiActionExtractor';
+import { decodeTransactionAction } from './utils/rpcDecoder';
 
 class PartisiaTransactionIndexer {
   private running = false;
@@ -234,7 +235,6 @@ class PartisiaTransactionIndexer {
 
   private async isRelevantTransaction(tx: any, txId: string): Promise<boolean> {
     const content = tx.content || '';
-    const events = tx.executionStatus?.events || [];
 
     // Convert hex addresses to bytes for binary search
     const contractAddressHex = this.liquidStakingContract.toLowerCase();
@@ -254,27 +254,23 @@ class PartisiaTransactionIndexer {
     }
 
     // Check if contract or admin address bytes appear in the decoded content
+    // Only check content (not events) to avoid catching "payout" transactions where our contract
+    // is mentioned in events as a recipient, but isn't the actual target of the transaction
     const hasContractInContent = contentBuffer.includes(contractBytes);
     const hasAdminInContent = contentBuffer.includes(adminBytes);
 
-    // Also check in events JSON (events might have addresses)
-    const eventsStr = JSON.stringify(events).toLowerCase();
-    const hasContractInEvents = eventsStr.includes(contractAddressHex);
-    const hasAdminInEvents = eventsStr.includes(adminAddressHex);
-
-    // A transaction is relevant if it contains our contract or admin address
-    const isRelevant = hasContractInContent || hasAdminInContent ||
-                      hasContractInEvents || hasAdminInEvents;
+    // A transaction is relevant ONLY if it directly calls our contract (address in content)
+    // This excludes "payout" transactions from validators that only mention us in events
+    const isRelevant = hasContractInContent || hasAdminInContent;
 
     if (isRelevant) {
-      console.log(`🔍 Relevant transaction found: ${txId} (contract in content: ${hasContractInContent}, admin in content: ${hasAdminInContent}, contract in events: ${hasContractInEvents}, admin in events: ${hasAdminInEvents})`);
+      console.log(`🔍 Relevant transaction found: ${txId} (contract in content: ${hasContractInContent}, admin in content: ${hasAdminInContent})`);
     }
 
     return isRelevant;
   }
 
   private async identifyTransactionAction(tx: any): Promise<string | null> {
-    // Properly decode ABI-encoded transaction content
     const content = tx.content || '';
 
     if (!content) {
@@ -282,93 +278,21 @@ class PartisiaTransactionIndexer {
     }
 
     try {
-      // Decode base64 content to binary
-      const contentBuffer = Buffer.from(content, 'base64');
+      // Use RPC decoder to extract action ID from transaction content
+      const actionId = decodeTransactionAction(content, this.liquidStakingContract);
 
-      // Action ID mapping extracted from the generated ABI file
-      // This ensures we stay in sync with contract codegen
+      if (actionId === null) {
+        return 'unknown';
+      }
+
+      // Map action ID byte to action name using ABI-generated mapping
       const actionMap = getLiquidStakingActionMap();
 
-      // Liquid staking contract actions (0x10-0x19) take priority over MPC20 token actions (0x01-0x05)
-
-      // Strategy 1: Look 5-15 bytes BEFORE the contract address for LS actions
-      // This is where the actual contract call action ID typically appears
-      const contractBytes = Buffer.from(this.liquidStakingContract.replace(/^0x/, ''), 'hex');
-      const contractIndex = contentBuffer.indexOf(contractBytes);
-
-      if (contractIndex > 0) {
-        // Search 5-15 bytes before contract address (the "sweet spot" for LS actions)
-        const searchStart = Math.max(0, contractIndex - 15);
-        const searchEnd = contractIndex - 5;
-
-        for (let i = searchEnd; i >= searchStart; i--) {
-          const byte = contentBuffer[i];
-          if (isLiquidStakingAction(byte) && actionMap[byte]) {
-            return actionMap[byte];
-          }
-        }
+      if (actionMap[actionId]) {
+        return actionMap[actionId];
       }
 
-      // Strategy 2: Check very close to contract (0-5 bytes before) for any action
-      // This catches MPC20 token actions that appear just before the contract
-      if (contractIndex > 0) {
-        const searchStart = Math.max(0, contractIndex - 5);
-        const searchEnd = contractIndex - 1;
-
-        for (let i = searchEnd; i >= searchStart; i--) {
-          const byte = contentBuffer[i];
-          if (actionMap[byte]) {
-            return actionMap[byte];
-          }
-        }
-      }
-
-      // Strategy 3: Check common offsets for liquid staking actions
-      const commonOffsets = [72, 78, 79, 80];
-      for (const offset of commonOffsets) {
-        if (offset < contentBuffer.length) {
-          const byte = contentBuffer[offset];
-          if (isLiquidStakingAction(byte) && actionMap[byte]) {
-            return actionMap[byte];
-          }
-        }
-      }
-
-      // Strategy 4: Search broadly around contract address for liquid staking actions
-      if (contractIndex > 0) {
-        const searchStart = Math.max(0, contractIndex - 30);
-        const searchEnd = Math.min(contentBuffer.length, contractIndex + contractBytes.length + 50);
-
-        for (let i = searchStart; i < searchEnd; i++) {
-          const byte = contentBuffer[i];
-          if (isLiquidStakingAction(byte) && actionMap[byte]) {
-            return actionMap[byte];
-          }
-        }
-      }
-
-      // Strategy 5: If no liquid staking action found, accept any valid action
-      // Search near contract first (more likely to be correct), then scan entire buffer
-      if (contractIndex > 0) {
-        const searchStart = Math.max(0, contractIndex - 30);
-        const searchEnd = Math.min(contentBuffer.length, contractIndex + contractBytes.length + 50);
-
-        for (let i = searchStart; i < searchEnd; i++) {
-          const byte = contentBuffer[i];
-          if (actionMap[byte]) {
-            return actionMap[byte];
-          }
-        }
-      }
-
-      // Last resort: scan entire buffer
-      for (let i = 0; i < contentBuffer.length; i++) {
-        const byte = contentBuffer[i];
-        if (actionMap[byte]) {
-          return actionMap[byte];
-        }
-      }
-
+      console.warn(`Unknown action ID: 0x${actionId.toString(16)}`);
       return 'unknown';
     } catch (error) {
       console.warn('Error decoding transaction action:', error);

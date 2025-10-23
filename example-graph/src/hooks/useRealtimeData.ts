@@ -62,6 +62,11 @@ export function useRealtimeData(options: UseRealtimeDataOptions = {}) {
         const data = apiResponse.data
 
         // Transform v1 response to match RealtimeProgressData interface
+        const txProgressPercent = data.transactions.enabled
+          ? Math.min(100, (((data.transactions.currentBlock - data.transactions.deploymentBlock) / (data.transactions.targetBlock - data.transactions.deploymentBlock)) * 100))
+          : 100;
+        const overallSyncComplete = data.state.syncComplete && txProgressPercent >= 100;
+
         const progressData: RealtimeProgressData = {
           stateIndexer: {
             currentBlock: data.state.currentBlock,
@@ -75,15 +80,15 @@ export function useRealtimeData(options: UseRealtimeDataOptions = {}) {
             currentBlock: data.transactions.currentBlock,
             targetBlock: data.state.targetBlock,
             blocksRemaining: Math.max(0, data.state.targetBlock - data.transactions.currentBlock),
-            progressPercent: Math.min(100, ((data.transactions.currentBlock / data.state.targetBlock) * 100)),
+            progressPercent: txProgressPercent,
             transactionsFound: data.transactions.transactionsProcessed,
             contractTxFound: data.transactions.contractTxFound,
             adminTxFound: data.transactions.adminTxFound,
-            blocksPerSecond: 0
+            blocksPerSecond: data.transactions.blocksPerSecond || 0
           },
           overall: {
             progressPercent: data.state.progressPercent,
-            syncComplete: data.state.syncComplete,
+            syncComplete: overallSyncComplete,
             estimatedTimeRemaining: data.overall.syncing ? 'Syncing...' : 'Complete'
           }
         }

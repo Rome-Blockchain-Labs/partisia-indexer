@@ -22,10 +22,15 @@ const IndexingProgress: FC = () => {
       const data = apiResponse.data
 
       // Transform v1 response to match component structure
+      const txProgressPercent = data.transactions.enabled
+        ? Math.min(100, (((data.transactions.currentBlock - data.transactions.deploymentBlock) / (data.transactions.targetBlock - data.transactions.deploymentBlock)) * 100))
+        : 100;
+      const overallSyncComplete = data.state.syncComplete && txProgressPercent >= 100;
+
       const transformedData = {
         overall: {
           progressPercent: data.state.progressPercent,
-          syncComplete: data.state.syncComplete,
+          syncComplete: overallSyncComplete,
           estimatedTimeRemaining: data.overall.syncing ? 'Syncing...' : 'Complete'
         },
         stateIndexer: {
@@ -41,7 +46,7 @@ const IndexingProgress: FC = () => {
           targetBlock: data.transactions.targetBlock,
           deploymentBlock: data.transactions.deploymentBlock,
           blocksRemaining: data.transactions.blocksRemaining,
-          progressPercent: Math.min(100, (((data.transactions.currentBlock - data.transactions.deploymentBlock) / (data.transactions.targetBlock - data.transactions.deploymentBlock)) * 100)),
+          progressPercent: txProgressPercent,
           transactionsFound: data.transactions.transactionsProcessed,
           contractTxFound: data.transactions.contractTxFound,
           adminTxFound: data.transactions.adminTxFound,
