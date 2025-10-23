@@ -109,7 +109,15 @@ export class liquid_staking {
     const amountOfBuyInLockedStakeTokens: BN = _input.readUnsignedBigInteger(16);
     const buyInPercentage: BN = _input.readUnsignedBigInteger(16);
     const buyInEnabled: boolean = _input.readBoolean();
-    const pendingUnlockIdCounter: number = _input.readU32();
+    // Backward compatibility: pendingUnlockIdCounter was added later
+    // Old states don't have this field, so default to 0
+    let pendingUnlockIdCounter: number = 0;
+    try {
+      pendingUnlockIdCounter = _input.readU32();
+    } catch (e) {
+      // If reading fails (buffer too short), it's an old state without this field
+      pendingUnlockIdCounter = 0;
+    }
     return { tokenForStaking, stakeTokenBalance, stakingResponsible, administrator, totalPoolStakeToken, totalPoolLiquid, liquidTokenState, pendingUnlocks, buyInTokens, lengthOfCooldownPeriod, lengthOfRedeemPeriod, amountOfBuyInLockedStakeTokens, buyInPercentage, buyInEnabled, pendingUnlockIdCounter };
   }
   public deserializeLiquidTokenState(_input: AbiInput): LiquidTokenState {
@@ -162,7 +170,20 @@ export class liquid_staking {
     return { owner, spender };
   }
   public deserializePendingUnlock(_input: AbiInput): PendingUnlock {
-    const id: number = _input.readU32();
+    // Backward compatibility: Check buffer size to determine format
+    // Old format: liquidAmount(16) + stakeTokenAmount(16) + createdAt(8) + cooldownEndsAt(8) + expiresAt(8) = 56 bytes
+    // New format: id(4) + liquidAmount(16) + stakeTokenAmount(16) + createdAt(8) + cooldownEndsAt(8) + expiresAt(8) = 60 bytes
+    const startOffset = (_input as any).offset || 0;
+    const buffer = (_input as any).buffer;
+    const remaining = buffer ? buffer.length - startOffset : 100; // Default to assuming new format if we can't check
+
+    let id: number = 0;
+    if (remaining >= 60) {
+      // New format with id field
+      id = _input.readU32();
+    }
+    // else: Old format without id field, keep id = 0
+
     const liquidAmount: BN = _input.readUnsignedBigInteger(16);
     const stakeTokenAmount: BN = _input.readUnsignedBigInteger(16);
     const createdAt: BN = _input.readU64();
