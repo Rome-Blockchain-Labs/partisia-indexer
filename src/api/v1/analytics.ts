@@ -23,74 +23,112 @@ export function createAnalyticsRouter(): Router {
       const stats = await indexer.getStats();
 
       if (!stats.syncComplete || !stats.canCalculateAPY) {
+        // null, not "0.00" - callers must be able to tell "unknown" from "no yield"
         return res.apiSuccess({
-          apy24h: "0.00",
-          apy7d: "0.00",
-          apy30d: "0.00",
+          apy24h: null,
+          apy7d: null,
+          apy30d: null,
+          windows: null,
           syncComplete: false,
           progressPercent: stats.progressPercent.toFixed(1),
           note: `Sync incomplete: ${stats.progressPercent.toFixed(1)}% - APY calculation disabled`
         });
       }
 
-      const allData = await db.query(`
-        SELECT exchange_rate, timestamp
-        FROM contract_states
-        ORDER BY timestamp ASC
-      `);
+      // an empty liquid pool or a fully buy-in-locked stake pool yields a
+      // synthesized rate of 1.0 (see indexer buildContractState) - that is a
+      // placeholder, not a measured rate, and must not anchor a window
+      const MEASURABLE = `
+        total_pool_liquid > 0
+        AND total_pool_stake_token > COALESCE(amount_of_buy_in_locked_stake_tokens, 0)
+      `;
 
-      if (allData.rows.length < 2) {
+      const latestResult = await db.query(`
+        SELECT exchange_rate, timestamp, block_number
+        FROM contract_states
+        WHERE ${MEASURABLE}
+        ORDER BY timestamp DESC, block_number DESC
+        LIMIT 1
+      `);
+      const latest = latestResult.rows[0];
+
+      if (!latest) {
         return res.apiSuccess({
           apy24h: null,
           apy7d: null,
           apy30d: null,
+          windows: null,
+          syncComplete: true,
           note: "Insufficient data for APY calculation"
         });
       }
 
-      const now = new Date();
-      const points = allData.rows;
-      const latest = points[points.length - 1];
+      // windows anchor to the newest indexed state rather than wall clock, so a
+      // lagging indexer shortens the window instead of collapsing it to null
+      const latestTime = new Date(latest.timestamp);
 
-      // Find closest historical points for precise APY calc
-      const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-      const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-      const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+      const calculateAPY = async (targetDays: number) => {
+        const target = new Date(latestTime.getTime() - targetDays * 24 * 60 * 60 * 1000);
 
-      const findAtOrBefore = (targetTime: Date) => {
-        let candidate = points[0];
-        for (const p of points) {
-          const t = new Date(p.timestamp);
-          if (t <= targetTime) {
-            candidate = p;
-          } else {
-            break;
-          }
-        }
-        return candidate;
+        // newest snapshot at or before the boundary, index-served rather than
+        // scanned in JS - so actualDays >= targetDays by construction
+        const prior = await db.query(`
+          SELECT exchange_rate, timestamp, block_number
+          FROM contract_states
+          WHERE ${MEASURABLE} AND timestamp <= $1
+          ORDER BY timestamp DESC, block_number DESC
+          LIMIT 1
+        `, [target]);
+
+        const oldPoint = prior.rows[0];
+
+        // history does not reach back this far - the window is unavailable, and
+        // must not silently degrade into a since-inception figure
+        if (!oldPoint || oldPoint.block_number === latest.block_number) return null;
+
+        const actualDays = (latestTime.getTime() - new Date(oldPoint.timestamp).getTime()) / (1000 * 60 * 60 * 24);
+        if (actualDays <= 0) return null;
+
+        const oldRate = parseFloat(oldPoint.exchange_rate);
+        const newRate = parseFloat(latest.exchange_rate);
+        if (!(oldRate > 0) || !(newRate > 0)) return null;
+
+        const annualized = Math.pow(newRate / oldRate, 365 / actualDays);
+        if (!Number.isFinite(annualized)) return null;
+
+        return {
+          apy: (annualized - 1) * 100,
+          actualDays,
+          fromBlock: Number(oldPoint.block_number),
+          toBlock: Number(latest.block_number),
+          // [r1, r2] - the two rates the figure is derived from, so clients can
+          // show the working. Unix seconds, matching the rest of the v1 API.
+          datapoints: [
+            { timestamp: Math.floor(new Date(oldPoint.timestamp).getTime() / 1000), rate: String(oldPoint.exchange_rate) },
+            { timestamp: Math.floor(latestTime.getTime() / 1000), rate: String(latest.exchange_rate) }
+          ]
+        };
       };
 
-      const dayPoint = findAtOrBefore(oneDayAgo);
-      const weekPoint = findAtOrBefore(sevenDaysAgo);
-      const monthPoint = findAtOrBefore(thirtyDaysAgo);
-
-      const calculateAPY = (oldPoint: any, newPoint: any) => {
-        const timeDiff = (new Date(newPoint.timestamp).getTime() - new Date(oldPoint.timestamp).getTime()) / (1000 * 60 * 60 * 24);
-        if (timeDiff <= 0) return null;
-
-        const rateChange = parseFloat(newPoint.exchange_rate) / parseFloat(oldPoint.exchange_rate);
-        const annualizedMultiplier = Math.pow(rateChange, 365 / timeDiff);
-        return (annualizedMultiplier - 1) * 100;
-      };
-
-      const apy24h = dayPoint !== latest ? calculateAPY(dayPoint, latest) : null;
-      const apy7d = weekPoint !== latest ? calculateAPY(weekPoint, latest) : null;
-      const apy30d = monthPoint !== latest ? calculateAPY(monthPoint, latest) : null;
+      const [w24h, w7d, w30d] = await Promise.all([
+        calculateAPY(1),
+        calculateAPY(7),
+        calculateAPY(30)
+      ]);
 
       res.apiSuccess({
-        apy24h: apy24h !== null ? apy24h.toFixed(2) : "0.00",
-        apy7d: apy7d !== null ? apy7d.toFixed(2) : "0.00",
-        apy30d: apy30d !== null ? apy30d.toFixed(2) : "0.00",
+        apy24h: w24h ? w24h.apy.toFixed(2) : null,
+        apy7d: w7d ? w7d.apy.toFixed(2) : null,
+        apy30d: w30d ? w30d.apy.toFixed(2) : null,
+        // measured span backing each figure. r1 is the newest snapshot at or
+        // before the boundary, so actualDays >= requestedDays - it overshoots
+        // when snapshots are sparse around the boundary, never undershoots
+        windows: {
+          apy24h: w24h && { requestedDays: 1, actualDays: Number(w24h.actualDays.toFixed(4)), fromBlock: w24h.fromBlock, toBlock: w24h.toBlock, datapoints: w24h.datapoints },
+          apy7d: w7d && { requestedDays: 7, actualDays: Number(w7d.actualDays.toFixed(4)), fromBlock: w7d.fromBlock, toBlock: w7d.toBlock, datapoints: w7d.datapoints },
+          apy30d: w30d && { requestedDays: 30, actualDays: Number(w30d.actualDays.toFixed(4)), fromBlock: w30d.fromBlock, toBlock: w30d.toBlock, datapoints: w30d.datapoints }
+        },
+        latestTimestamp: latestTime.toISOString(),
         syncComplete: true
       });
     } catch (error) {

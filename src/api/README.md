@@ -188,14 +188,38 @@ All API responses follow a consistent format:
 ### Analytics
 - **GET /api/v1/analytics/apy**
   - Returns APY calculations for 24h, 7d, and 30d periods
+  - Each figure is `null` when the window cannot be measured (sync incomplete,
+    or history does not reach back that far). `null` means unknown — it is never
+    reported as `"0.00"`, so callers can distinguish it from genuine zero yield.
+  - `windows` reports the span actually measured. `r1` is the newest snapshot at
+    or before the boundary, so `actualDays >= requestedDays`.
+  - `datapoints` is `[r1, r2]` — the two rates the figure is derived from, in
+    unix seconds — so clients can show the working. Recomputing
+    `(r2/r1) ^ (365 / actualDays) - 1` from them reproduces the published value.
   ```json
   {
     "apy24h": "5.23",
     "apy7d": "5.18",
     "apy30d": "5.15",
+    "windows": {
+      "apy30d": {
+        "requestedDays": 30,
+        "actualDays": 30.114,
+        "fromBlock": 4210567,
+        "toBlock": 5555001,
+        "datapoints": [
+          { "timestamp": 1751932800, "rate": "1.0512340000" },
+          { "timestamp": 1754535262, "rate": "1.0556120000" }
+        ]
+      }
+    },
+    "latestTimestamp": "2026-07-28T09:14:22.000Z",
     "syncComplete": true
   }
   ```
+  - Formula: `APY = (r2 / r1) ^ (365 / actualDays) - 1`, where the exchange rate
+    is `(total_pool_stake_token - amount_of_buy_in_locked_stake_tokens) / total_pool_liquid`
+    — the same effective stake the contract uses to price redemptions.
 
 - **GET /api/v1/analytics/daily**
   - Query params: `days` (default: 30, min: 1, max: 365)

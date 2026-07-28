@@ -188,6 +188,36 @@ jobs:
             docker compose -f docker-compose.${{ env.ENVIRONMENT }}.yaml stop indexer 2>/dev/null || true
             docker compose -f docker-compose.${{ env.ENVIRONMENT }}.yaml rm -f indexer 2>/dev/null || true
 
+            # Apply pending migrations while the indexer is stopped but postgres is
+            # still up. Must happen here: migrations rewrite historical rows, so the
+            # old indexer must not be running, and the new one must not start first.
+            # Mirrors scripts/deploy-schema.sh, which is the manual equivalent.
+            echo "🗄️ Applying database migrations"
+            PG=\$(docker compose -f docker-compose.${{ env.ENVIRONMENT }}.yaml ps -q postgres)
+            pg_sql() { docker exec -i \$PG psql -U indexer -d ls_indexer "\$@"; }
+
+            pg_sql -q -c "CREATE TABLE IF NOT EXISTS schema_migrations (filename TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW());"
+
+            # 001 predates this tracking table on existing databases - adopt it rather
+            # than replaying it, since it drops and recreates the transactions table
+            if [ "\$(pg_sql -tAc "SELECT count(*) FROM schema_migrations;")" = "0" ]; then
+              if [ "\$(pg_sql -tAc "SELECT to_regclass('public.transaction_content') IS NOT NULL;")" = "t" ]; then
+                echo "  ℹ️ existing schema detected - baselining 001 as applied"
+                pg_sql -q -c "INSERT INTO schema_migrations (filename) VALUES ('001_transaction_content_separation.sql') ON CONFLICT DO NOTHING;"
+              fi
+            fi
+
+            for f in src/db/migrations/*.sql; do
+              name=\$(basename "\$f")
+              if [ "\$(pg_sql -tAc "SELECT 1 FROM schema_migrations WHERE filename = '\$name';")" = "1" ]; then
+                echo "  ⏭️ \$name already applied"
+                continue
+              fi
+              echo "  applying \$name"
+              docker exec -i \$PG psql -v ON_ERROR_STOP=1 -U indexer -d ls_indexer < "\$f"
+              pg_sql -q -c "INSERT INTO schema_migrations (filename) VALUES ('\$name');"
+            done
+
             # Rebuild and start indexer
             docker compose -f docker-compose.${{ env.ENVIRONMENT }}.yaml build --no-cache indexer
             docker compose -f docker-compose.${{ env.ENVIRONMENT }}.yaml up -d

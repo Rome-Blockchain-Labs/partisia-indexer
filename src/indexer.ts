@@ -303,21 +303,23 @@ class PartisiaIndexer {
       console.log(`🔹 Inserting ${context.contractStates.length} contract_states: blocks ${blocks}`);
 
       const values = context.contractStates.map((s: any, i: number) => {
-        const offset = i * 8;
-        return `($${offset+1}, $${offset+2}, $${offset+3}, $${offset+4}, $${offset+5}, $${offset+6}, $${offset+7}, $${offset+8})`;
+        const offset = i * 9;
+        return `($${offset+1}, $${offset+2}, $${offset+3}, $${offset+4}, $${offset+5}, $${offset+6}, $${offset+7}, $${offset+8}, $${offset+9})`;
       }).join(',');
 
       const params = context.contractStates.flatMap((s: any) => [
         s.blockNumber, s.timestamp, s.exchangeRate,
         s.stakeAmount, s.liquidAmount, s.stakeTokenBalance,
-        s.buyInPercentage, s.buyInEnabled
+        s.buyInPercentage, s.buyInEnabled, s.buyInLockedTokens
       ]);
 
+      // amount_of_buy_in_locked_stake_tokens is persisted here so exchange_rate
+      // stays reproducible from the row itself - it is a term in the rate
       await db.query(`
         INSERT INTO contract_states (
           block_number, timestamp, exchange_rate,
           total_pool_stake_token, total_pool_liquid, stake_token_balance,
-          buy_in_percentage, buy_in_enabled
+          buy_in_percentage, buy_in_enabled, amount_of_buy_in_locked_stake_tokens
         ) VALUES ${values}
         ON CONFLICT (block_number) DO UPDATE SET
           timestamp = EXCLUDED.timestamp,
@@ -326,7 +328,8 @@ class PartisiaIndexer {
           total_pool_liquid = EXCLUDED.total_pool_liquid,
           stake_token_balance = EXCLUDED.stake_token_balance,
           buy_in_percentage = EXCLUDED.buy_in_percentage,
-          buy_in_enabled = EXCLUDED.buy_in_enabled
+          buy_in_enabled = EXCLUDED.buy_in_enabled,
+          amount_of_buy_in_locked_stake_tokens = EXCLUDED.amount_of_buy_in_locked_stake_tokens
       `, params);
 
       console.log(`✅ contract_states inserted successfully`);
@@ -509,13 +512,18 @@ class PartisiaIndexer {
     const stakeAmount = BigInt(state.totalPoolStakeToken?.toString() || '0');
     const liquidAmount = BigInt(state.totalPoolLiquid?.toString() || '0');
     const stakeTokenBalance = BigInt(state.stakeTokenBalance?.toString() || '0');
+    const buyInLocked = BigInt(state.amountOfBuyInLockedStakeTokens?.toString() || '0');
 
-    // Exchange rate = stakeAmount / liquidAmount (how many MPC you get per 1 sMPC)
+    // Exchange rate = effectiveStake / liquidAmount (how many MPC you get per 1 sMPC).
+    // Must mirror the contract's effective_stake(): buy-in locked tokens sit in
+    // total_pool_stake_token but are excluded from every redemption calculation,
+    // so including them here overstates what a holder can actually redeem.
     // As rewards accrue, each sMPC represents more MPC, so rate should be >= 1.0
     // Use high precision: multiply by 1e10, divide, then scale back to float
-    const exchangeRate = liquidAmount === 0n
+    const effectiveStake = stakeAmount > buyInLocked ? stakeAmount - buyInLocked : 0n;
+    const exchangeRate = liquidAmount === 0n || effectiveStake === 0n
       ? 1.0
-      : Number((stakeAmount * 10_000_000_000n) / liquidAmount) / 10_000_000_000;
+      : Number((effectiveStake * 10_000_000_000n) / liquidAmount) / 10_000_000_000;
 
     const hasActivity = (
       stakeAmount !== 0n ||
@@ -616,6 +624,7 @@ class PartisiaIndexer {
         stakeTokenBalance: state.stakeTokenBalance?.toString() || '0',
         buyInPercentage: state.buyInPercentage?.toString() || '0',
         buyInEnabled: state.buyInEnabled || false,
+        buyInLockedTokens: buyInLocked.toString(),
         exchange_rate: currentState.exchangeRate,
         total_pool_stake_token: currentState.totalPoolStakeToken,
         total_pool_liquid: currentState.totalPoolLiquid,
