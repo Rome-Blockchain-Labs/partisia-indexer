@@ -33,12 +33,14 @@ jobs:
           echo "ENVIRONMENT=${{ github.event.inputs.environment }}" >> $GITHUB_ENV
           echo "RESET_DB=${{ github.event.inputs.reset_db }}" >> $GITHUB_ENV
 
+          # Addressed by IP: the helhetz*.romenet.io names no longer resolve, which
+          # made ssh-keyscan fail before any output. Matches the sibling repos.
           if [[ "${{ github.event.inputs.server }}" == "helhetz01" ]]; then
             echo "SERVER_HOST=helhetz01.romenet.io" >> $GITHUB_ENV
             echo "PORTS_PREFIX=${{ github.event.inputs.environment == 'production' && '17' || '27' }}" >> $GITHUB_ENV
             echo "SSH_KEY_SECRET=SSH_PRIVATE_KEY_HELHETZ01" >> $GITHUB_ENV
           else
-            echo "SERVER_HOST=helhetz02.romenet.io" >> $GITHUB_ENV
+            echo "SERVER_HOST=135.181.252.175" >> $GITHUB_ENV
             echo "PORTS_PREFIX=${{ github.event.inputs.environment == 'production' && '18' || '28' }}" >> $GITHUB_ENV
             echo "SSH_KEY_SECRET=SSH_PRIVATE_KEY_HELHETZ02" >> $GITHUB_ENV
           fi
@@ -121,7 +123,10 @@ jobs:
       - name: Deploy
         run: |
           set -e
-          ssh-keyscan -H ${{ env.SERVER_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+          # not silenced: a failure here aborts under `set -e` with no output at
+          # all, which is indistinguishable from the deploy dying for any reason
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ env.SERVER_HOST }} >> ~/.ssh/known_hosts
           ssh partisia@${{ env.SERVER_HOST }} "mkdir -p ${{ env.DEPLOY_PATH }}/src/db"
 
           tar -czf deploy.tar.gz src scripts package.json tsconfig.json Dockerfile bun.lock docker-compose.${{ env.ENVIRONMENT }}.yaml example-graph
