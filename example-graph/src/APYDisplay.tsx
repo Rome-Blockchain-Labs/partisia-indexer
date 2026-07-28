@@ -1,11 +1,14 @@
 import React, { FC, useState, useEffect } from 'react'
 
 interface APYData {
-  apy24h: string
-  apy7d: string
-  apy30d: string
+  apy24h: string | null
+  apy7d: string | null
+  apy30d: string | null
   syncComplete: boolean
 }
+
+// null means the window could not be measured, not zero yield
+const formatAPY = (value: string | null) => (value != null ? `${value}%` : '—')
 
 const APYDisplay: FC = () => {
   const [data, setData] = useState<APYData | null>(null)
@@ -72,7 +75,7 @@ const APYDisplay: FC = () => {
         <div className="bg-gradient-to-br from-blue-50 to-blue-100 rounded-lg p-4">
           <div className="text-sm text-blue-600 font-medium mb-1">24 Hour</div>
           <div className="text-3xl font-bold text-blue-900">
-            {data.apy24h}%
+            {formatAPY(data.apy24h)}
           </div>
           <div className="text-xs text-blue-600 mt-1">Last day</div>
         </div>
@@ -81,7 +84,7 @@ const APYDisplay: FC = () => {
         <div className="bg-gradient-to-br from-purple-50 to-purple-100 rounded-lg p-4">
           <div className="text-sm text-purple-600 font-medium mb-1">7 Day</div>
           <div className="text-3xl font-bold text-purple-900">
-            {data.apy7d}%
+            {formatAPY(data.apy7d)}
           </div>
           <div className="text-xs text-purple-600 mt-1">Last week</div>
         </div>
@@ -90,7 +93,7 @@ const APYDisplay: FC = () => {
         <div className="bg-gradient-to-br from-green-50 to-green-100 rounded-lg p-4">
           <div className="text-sm text-green-600 font-medium mb-1">30 Day</div>
           <div className="text-3xl font-bold text-green-900">
-            {data.apy30d}%
+            {formatAPY(data.apy30d)}
           </div>
           <div className="text-xs text-green-600 mt-1">Last month</div>
         </div>
