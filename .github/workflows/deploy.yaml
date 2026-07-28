@@ -132,7 +132,13 @@ jobs:
           tar -czf deploy.tar.gz src scripts package.json tsconfig.json Dockerfile bun.lock docker-compose.${{ env.ENVIRONMENT }}.yaml example-graph
           scp deploy.tar.gz partisia@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}/
 
-          ssh partisia@${{ env.SERVER_HOST }} << EOF
+          # Output is captured so the completion marker can be checked. A command
+          # that reads stdin inside this heredoc swallows the rest of the script,
+          # and ssh then exits 0 having silently skipped everything after it -
+          # which looks identical to success. The marker is the only proof the
+          # script ran to the end.
+          set +e
+          ssh partisia@${{ env.SERVER_HOST }} > deploy_out.log 2>&1 << EOF
             set -e
             cd ${{ env.DEPLOY_PATH }}
             tar -xzf deploy.tar.gz
@@ -199,7 +205,10 @@ jobs:
             # Mirrors scripts/deploy-schema.sh, which is the manual equivalent.
             echo "🗄️ Applying database migrations"
             PG=\$(docker compose -f docker-compose.${{ env.ENVIRONMENT }}.yaml ps -q postgres)
-            pg_sql() { docker exec -i \$PG psql -U indexer -d ls_indexer "\$@"; }
+            # NO -i here. This whole script is fed to bash over ssh via stdin, so a
+            # 'docker exec -i' without a stdin redirect consumes the rest of the
+            # script and the deploy silently stops - exiting 0, mid-way.
+            pg_sql() { docker exec \$PG psql -U indexer -d ls_indexer "\$@" < /dev/null; }
 
             pg_sql -q -c "CREATE TABLE IF NOT EXISTS schema_migrations (filename TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW());"
 
@@ -237,7 +246,20 @@ jobs:
             fi
 
             echo "✅ Deployment successful"
+            echo "__DEPLOY_COMPLETE__"
           EOF
+          SSH_RC=$?
+          set -e
+          cat deploy_out.log
+
+          if [ "$SSH_RC" -ne 0 ]; then
+            echo "::error::remote deploy failed (ssh exit $SSH_RC)"
+            exit 1
+          fi
+          if ! grep -q "__DEPLOY_COMPLETE__" deploy_out.log; then
+            echo "::error::deploy script ended early - output stops before the completion marker, so later steps never ran"
+            exit 1
+          fi
 
       - name: Verify deployment
         run: |
